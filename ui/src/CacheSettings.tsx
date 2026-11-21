@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import type { FormEvent } from 'react';
 import { FolderOpen, HardDrive, Trash2 } from 'lucide-react';
 import { call, message } from './native';
@@ -13,6 +13,65 @@ function size(bytes: number) {
   if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
   if (bytes < 1024 * 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
   return (bytes / (1024 * 1024 * 1024)).toFixed(2) + ' GB';
+}
+
+function diskUsage(usage: Usage) {
+  const cacheBytes = usage.messages + usage.images;
+  const diskBytes = Math.max(0, Math.min(usage.driveTotal, usage.driveTotal - usage.driveFree));
+  const driveSize = Math.max(1, usage.driveTotal);
+  const usedPercent = 100 * diskBytes / driveSize;
+  const cachePercent = Math.min(usedPercent, 100 * cacheBytes / driveSize);
+  return { cacheBytes, diskBytes, usedPercent, cachePercent };
+}
+
+export function CacheUsageButton({ open, onOpen }: { open: boolean; onOpen: () => void }) {
+  const [usage, setUsage] = useState<Usage | null>(null);
+  const [failed, setFailed] = useState(false);
+  const [hovered, setHovered] = useState(false);
+  const reading = useRef(false);
+  const tooltipId = useId();
+
+  const refresh = useCallback(async () => {
+    if (reading.current) return;
+    reading.current = true;
+    try {
+      setUsage(await call<Usage>('cache.usage'));
+      setFailed(false);
+    } catch {
+      setFailed(true);
+    } finally {
+      reading.current = false;
+    }
+  }, []);
+  useEffect(() => { void refresh(); }, [refresh]);
+
+  const disk = usage && diskUsage(usage);
+  return <div className="rail-cache">
+    <button className="rail-cache-button" type="button" aria-label="缓存管理" aria-haspopup="dialog" aria-expanded={open}
+      aria-describedby={tooltipId} data-testid="cache-open" onClick={() => { setHovered(false); onOpen(); }}
+      onMouseEnter={() => { setHovered(true); void refresh(); }} onMouseLeave={() => setHovered(false)} onFocus={() => void refresh()}>
+      <span className="rail-cache-meter" aria-hidden="true">
+        {disk && <span className="cache-drive-used" style={{ height: disk.usedPercent + '%' }}>
+          {disk.cachePercent > 0 && <span className="cache-drive-squad" style={{ height: `min(100%, max(2px, ${100 * disk.cachePercent / disk.usedPercent}%))` }} />}
+        </span>}
+      </span>
+    </button>
+    <div className="rail-cache-tooltip" id={tooltipId} role="tooltip" data-hovered={hovered && !open}>
+      <strong>缓存用量</strong>
+      {usage && disk ? <dl>
+        <dt className="cache-legend-squad">聊天缓存</dt><dd>{size(disk.cacheBytes)}</dd>
+        <dt>聊天记录</dt><dd>{size(usage.messages)}</dd>
+        <dt>图片</dt><dd>{size(usage.images)}</dd>
+        <dt>WebView2 运行数据</dt><dd>{size(usage.webView)}</dd>
+        {usage.driveTotal > 0 && <>
+          <dt className="cache-legend-used">磁盘其他已用</dt><dd>{size(Math.max(0, disk.diskBytes - disk.cacheBytes))}</dd>
+          <dt className="cache-legend-free">磁盘可用</dt><dd>{size(usage.driveFree)}</dd>
+          <dt>磁盘总容量</dt><dd>{size(usage.driveTotal)}</dd>
+        </>}
+      </dl> : <p>{failed ? '暂时无法读取缓存用量。' : '正在统计缓存…'}</p>}
+      {usage && failed && <p>用量暂未刷新。</p>}
+    </div>
+  </div>;
 }
 
 export function CacheSettings({ connected, close }: { connected: boolean; close: () => void }) {
@@ -45,16 +104,14 @@ export function CacheSettings({ connected, close }: { connected: boolean; close:
   }
   function submit(event: FormEvent) { event.preventDefault(); void save(false); }
   if (!usage) return error ? <p className="form-error" role="alert">{error}</p> : <p className="muted-text">正在统计缓存…</p>;
-  const total = usage.messages + usage.images;
-  const allUsed = Math.min(100, Math.max(0, 100 * (usage.driveTotal - usage.driveFree) / Math.max(usage.driveTotal, 1)));
-  const cacheUsed = Math.min(allUsed, 100 * total / Math.max(usage.driveTotal, 1));
+  const { cacheBytes, usedPercent, cachePercent } = diskUsage(usage);
 
   return <form className="modal-form cache-settings" onSubmit={submit} data-testid="cache-settings">
     <div className="cache-usage-card">
-      <div className="cache-usage-heading"><HardDrive size={18} /><strong>聊天缓存</strong><span data-testid="cache-total">{size(total)}</span></div>
-      <div className="cache-drive" role="meter" aria-label="缓存所在磁盘使用率" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(allUsed)}>
-        <span className="cache-drive-used" style={{ width: allUsed + '%' }} />
-        {total > 0 && <span className="cache-drive-squad" style={{ width: Math.max(cacheUsed, 0.6) + '%' }} />}
+      <div className="cache-usage-heading"><HardDrive size={18} /><strong>聊天缓存</strong><span data-testid="cache-total">{size(cacheBytes)}</span></div>
+      <div className="cache-drive" role="meter" aria-label="缓存所在磁盘使用率" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(usedPercent)}>
+        <span className="cache-drive-used" style={{ width: usedPercent + '%' }} />
+        {cacheBytes > 0 && <span className="cache-drive-squad" style={{ width: Math.max(cachePercent, 0.6) + '%' }} />}
       </div>
       {usage.driveTotal > 0 && <p>可用 {size(usage.driveFree)}，总容量 {size(usage.driveTotal)}</p>}
       <dl className="cache-stats"><dt>聊天记录</dt><dd>{size(usage.messages)}</dd><dt>图片</dt><dd>{size(usage.images)}</dd><dt>WebView2 运行数据</dt><dd>{size(usage.webView)}</dd></dl>

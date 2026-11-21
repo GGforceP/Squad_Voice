@@ -80,7 +80,20 @@ async function chatQA(number: number) {
     uploaded.querySelector<HTMLButtonElement>('[data-testid="chat-delete"]')?.click();
     await click('confirm-message-delete');
     await until(() => !get('chat-history')?.textContent?.includes('图片验证 🎮'));
-    await click('settings-open');
+    const cacheShortcut = await until(() => get<HTMLButtonElement>('cache-open'));
+    const help = cacheShortcut.closest('.rail')?.querySelector('[aria-label="使用说明"]')?.getBoundingClientRect();
+    const shortcutBounds = cacheShortcut.getBoundingClientRect();
+    if (!help || shortcutBounds.bottom >= help.top || Math.abs(shortcutBounds.x + shortcutBounds.width / 2 - help.x - help.width / 2) > 1) {
+      throw new Error('cache shortcut is not aligned above the help button');
+    }
+    const tooltip = document.getElementById(cacheShortcut.getAttribute('aria-describedby') ?? '');
+    if (!tooltip || getComputedStyle(tooltip).visibility !== 'hidden') throw new Error('cache tooltip is normally visible');
+    cacheShortcut.dispatchEvent(new MouseEvent('mouseover', { bubbles: true, relatedTarget: document.body }));
+    await until(() => tooltip.textContent?.includes('聊天缓存') && getComputedStyle(tooltip).visibility === 'visible');
+    if (get('cache-settings')) throw new Error('showing cache usage opened the cache dialog');
+    await capture('cache-shortcut.png');
+    cacheShortcut.dispatchEvent(new MouseEvent('mouseout', { bubbles: true, relatedTarget: document.body }));
+    await until(() => getComputedStyle(tooltip).visibility === 'hidden');
     await click('cache-open');
     await until(() => get<HTMLInputElement>('cache-encrypted')?.checked);
     await capture('cache-settings.png');
@@ -246,6 +259,16 @@ async function run(input: Input) {
       return;
     }
     if (input.mode === 'persist') {
+      stage = 'new update control in audio settings';
+      await click('settings-open');
+      const audioSettings = await until(() => get('audio-settings'));
+      const updateButton = get('update-open')?.getBoundingClientRect();
+      const saveButton = get('save-audio-settings')?.getBoundingClientRect();
+      if (!updateButton || !saveButton || updateButton.right >= saveButton.left || Math.abs(updateButton.top - saveButton.top) > 1 ||
+          audioSettings.querySelector('[data-testid="cache-open"]')) throw new Error('audio settings controls are misplaced');
+      await click('update-open');
+      await until(() => get('updates-dialog'));
+      closeModal();
       stage = 'microphone record and playback';
       await click('settings-open');
       await click('mic-record');
