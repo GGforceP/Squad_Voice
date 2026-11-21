@@ -25,7 +25,8 @@ namespace SquadVoice {
             try {
                 var window = new MainWindow();
                 Application.Run(window);
-                if (window.UpdateRequested != null) window.UpdateRequested.Start(AppDomain.CurrentDomain.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar));
+                if (window.UpdateRequested != null)
+                    window.UpdateRequested.Start(AppDomain.CurrentDomain.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar), window.RestartRequested);
                 else if (window.RestartRequested) Process.Start(new ProcessStartInfo {
                     FileName = Application.ExecutablePath, WorkingDirectory = AppDomain.CurrentDomain.BaseDirectory,
                     UseShellExecute = false
@@ -113,7 +114,11 @@ namespace SquadVoice {
             if (lab) {
                 var input = Json.Object(Json.Serializer().DeserializeObject(labInput));
                 var mode = Json.Text(input, "mode", 20);
-                if (mode == "optional-update" || mode == "forced-update") updateVersion = "0.0.0";
+                if (File.Exists(Path.Combine(installDirectory, "app", "qa-update-installed.txt"))) {
+                    input["mode"] = "update-reopened";
+                    labInput = Json.Serializer().Serialize(input);
+                } else if (mode == "optional-update" || mode == "forced-update" || mode == "immediate-update" || mode == "required-exit")
+                    updateVersion = "0.0.0";
             }
 #endif
             updates = new ClientUpdater(api, updateVersion, dataDirectory, SendEvent);
@@ -174,18 +179,25 @@ namespace SquadVoice {
             Activate();
         }
 
-        private async Task Quit(bool restart = false) {
+        private async Task InstallImmediately() {
+            if (quitting) return;
+            var update = await updates.InstallNow();
+            if (update != null) await Quit(true, update);
+        }
+
+        private async Task Quit(bool restart = false, UpdateLaunch update = null) {
             if (quitting) return;
             quitting = true;
-            RestartRequested = restart;
-            if (!restart && !lab) {
-                var update = await updates.OnExit();
-                if (update != null) {
-                    var buttons = update.Release.Required ? MessageBoxButtons.OK : MessageBoxButtons.OKCancel;
-                    if (MessageBox.Show(this, "已下载 Squad Voice " + update.Release.Version + "。确认后会在后台安装并更新桌面快捷方式。",
-                        "Squad Voice 更新", buttons, MessageBoxIcon.Information) == DialogResult.OK) UpdateRequested = update;
-                }
+            if (update == null) update = await updates.OnExit();
+            if (update == null && updates.Required) {
+                quitting = false;
+                RestoreFromTray();
+                if (!api.SignedIn)
+                    MessageBox.Show(this, "请重新登录以完成必需更新。", "Squad Voice 更新", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
             }
+            UpdateRequested = update;
+            RestartRequested = restart || (update != null && updates.RestartOnInstall);
             SendEvent("app.hidden", true);
             ReleaseHotkey();
             StopCapture();
@@ -194,10 +206,19 @@ namespace SquadVoice {
             if (!IsDisposed) Close();
         }
 
+        protected override void OnHandleCreated(EventArgs e) {
+            base.OnHandleCreated(e);
+            const int immersiveDarkMode = 20;
+            const int legacyImmersiveDarkMode = 19;
+            const uint invalidate = 0x0001, updateNow = 0x0100, frame = 0x0400;
+            int dark = 1;
+            if (DwmSetWindowAttribute(Handle, immersiveDarkMode, ref dark, sizeof(int)) < 0)
+                DwmSetWindowAttribute(Handle, legacyImmersiveDarkMode, ref dark, sizeof(int));
+            RedrawWindow(Handle, IntPtr.Zero, IntPtr.Zero, invalidate | updateNow | frame);
+        }
+
         private async Task Initialize() {
             try {
-                int dark = 1;
-                DwmSetWindowAttribute(Handle, 20, ref dark, sizeof(int));
                 var webData = Path.Combine(store.DirectoryPath, "WebView");
                 Directory.CreateDirectory(webData);
                 var options = new CoreWebView2EnvironmentOptions();
@@ -321,7 +342,10 @@ namespace SquadVoice {
                     return await api.Feature("member/control", new { channelId = Json.Text(args, "channelId", 48),
                         targetId = Json.Text(args, "targetId", 64), action = Json.Text(args, "action", 24), enabled = Json.Bool(args, "enabled") }, CancellationToken.None);
                 case "update.check": return await updates.Check(Json.Bool(args, "interactive"));
-                case "update.accept": return updates.Accept();
+                case "update.now":
+                    BeginInvoke(new Action(async () => await InstallImmediately()));
+                    return null;
+                case "update.later": return updates.InstallLater();
                 case "channel.create": return await api.Feature("channel/create", ReadChannel(args), CancellationToken.None);
                 case "channel.update": return await api.Feature("channel/update", ReadChannel(args), CancellationToken.None);
                 case "channel.delete": return await api.Feature("channel/delete", new { id = Json.Text(args, "id", 48) }, CancellationToken.None);
@@ -384,11 +408,6 @@ namespace SquadVoice {
                     var planned = await updates.OnExit();
                     return new { queued = planned != null, required = planned != null && planned.Release.Required,
                         version = planned == null ? "" : planned.Release.Version.ToString() };
-                case "qa.update.exit":
-                    if (!lab) break;
-                    UpdateRequested = await updates.OnExit();
-                    BeginInvoke(new Action(async () => await Quit()));
-                    return null;
                 case "qa.report":
                     if (!lab) break;
                     WriteLabResult(args);
@@ -563,5 +582,6 @@ namespace SquadVoice {
         [DllImport("user32.dll")] private static extern bool UnregisterHotKey(IntPtr window, int id);
         [DllImport("user32.dll")] private static extern short GetAsyncKeyState(int key);
         [DllImport("dwmapi.dll")] private static extern int DwmSetWindowAttribute(IntPtr window, int attr, ref int value, int size);
+        [DllImport("user32.dll")] private static extern bool RedrawWindow(IntPtr window, IntPtr area, IntPtr region, uint flags);
     }
 }

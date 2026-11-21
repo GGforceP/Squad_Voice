@@ -29,7 +29,7 @@ export type Account = { user: Identity; workspace: { name: string; channels: Cha
 export type Presence = { id: string; name: string; mic: boolean; music: boolean; role?: MemberRole; rules?: RoomRules };
 export type Workspace = { name: string; admin: boolean; role?: MemberRole; managedChannels?: string[]; channels: Channel[]; presence: Record<string, Presence[]>; presenceUnavailable: string[] };
 export type VoiceTicket = { serverUrl: string; accessToken: string; leaseId: string; rules?: RoomRules };
-export type UpdateState = { status: 'none' | 'disabled' | 'current' | 'available' | 'downloading' | 'ready' | 'error'; version: string; required: boolean };
+export type UpdateState = { status: 'none' | 'disabled' | 'current' | 'available' | 'downloading' | 'ready' | 'error'; version: string; required: boolean; choice: 'none' | 'now' | 'later' };
 
 type NativeMessage = { id?: string; ok?: boolean; value?: unknown; error?: string; code?: string; event?: string };
 export class NativeError extends Error {

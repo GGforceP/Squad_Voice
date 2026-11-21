@@ -32,6 +32,7 @@ Var LockHandle
 Var MetadataTemp
 Var MigrateLegacy
 Var FromUpdater
+Var RelaunchAfterUpdate
 Var DesktopDirectory
 Var DesktopLink
 
@@ -162,11 +163,17 @@ Var DesktopLink
 Function .onInit
   StrCpy $LockHandle 0
   StrCpy $FromUpdater 0
+  StrCpy $RelaunchAfterUpdate 0
   ${GetParameters} $0
   ClearErrors
   ${GetOptions} $0 "/UPDATE" $1
   ${IfNot} ${Errors}
     StrCpy $FromUpdater 1
+    ClearErrors
+    ${GetOptions} $0 "/RELAUNCH" $1
+    ${IfNot} ${Errors}
+      StrCpy $RelaunchAfterUpdate 1
+    ${EndIf}
     ClearErrors
     ${GetOptions} $0 "/WAITPID=" $1
     ${IfNot} ${Errors}
@@ -368,6 +375,14 @@ Section "Squad Voice"
   Call ArchiveUpdate
   Call RefreshDesktopLink
   !insertmacro UnlockData
+  ${If} $RelaunchAfterUpdate == 1
+    SetOutPath "$INSTDIR"
+    ClearErrors
+    Exec '"$INSTDIR\SquadVoice.exe"'
+    ${If} ${Errors}
+      SetErrorLevel 1
+    ${EndIf}
+  ${EndIf}
   Goto install_done
 
 install_failed:

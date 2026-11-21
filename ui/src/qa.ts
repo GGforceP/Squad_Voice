@@ -1,7 +1,8 @@
 import { call, NativeError, subscribe } from './native';
 import type { Workspace } from './native';
 
-type Input = { number: number; mode: 'normal' | 'full' | 'config' | 'persist' | 'resume' | 'signed-out' | 'optional-update' | 'forced-update'; endpoint: string; username: string; password: string; expectMusic: boolean; accountEndpoints?: boolean; releaseVersion: string };
+type UpdateMode = 'optional-update' | 'forced-update' | 'immediate-update' | 'required-exit' | 'update-reopened';
+type Input = { number: number; mode: 'normal' | 'full' | 'config' | 'persist' | 'resume' | 'signed-out' | UpdateMode; endpoint: string; username: string; password: string; expectMusic: boolean; accountEndpoints?: boolean; releaseVersion: string };
 type TrackReport = { music: boolean; packets: number; bytes: number; energy: number; attached: boolean; muted: boolean };
 type Stats = {
   status: string; users: number; mic: boolean; tracks: TrackReport[]; sharing: boolean;
@@ -189,6 +190,15 @@ async function startIsolated(executable: string, wanted: number, excluded: numbe
 async function run(input: Input) {
   let stage = 'start';
   try {
+    if (input.mode === 'update-reopened') {
+      stage = 'default screen after update';
+      await until(() => get('workspace') && get('join'));
+      if ((await stats()).status !== 'idle' || document.querySelector('dialog[open]'))
+        throw new Error('the previous client state was restored after update');
+      await call('qa.report', { ok: true, reopened: true, defaultScreen: true });
+      await call('qa.exit');
+      return;
+    }
     if (input.mode === 'resume' || input.mode === 'signed-out') {
       if (input.mode === 'resume') {
         stage = 'automatic login on restart';
@@ -235,27 +245,37 @@ async function run(input: Input) {
     fill('username', input.username); fill('password', input.password);
     await click('login');
     await until(() => get('workspace'));
-    if (input.mode === 'optional-update' || input.mode === 'forced-update') {
+    if (input.mode === 'optional-update' || input.mode === 'forced-update' || input.mode === 'immediate-update' || input.mode === 'required-exit') {
       stage = 'client update offer';
-      const required = input.mode === 'forced-update';
-      await until(() => get('update-banner'));
-      const version = get('update-banner')?.textContent;
-      if (!version?.includes(input.releaseVersion) && !version?.includes('更新已下载')) throw new Error('new release was not offered');
-      await capture('update.png');
-      await click('update-skip');
-      if (!required) {
-        const skipped = await call<{ queued: boolean }>('qa.update.plan');
-        if (skipped.queued) throw new Error('skipped optional update queued an installer');
-        await click('settings-open');
-        await click('update-open');
-        await until(() => get('updates-dialog')?.textContent?.includes('发现新版本'));
-        get('updates-dialog')?.querySelector<HTMLButtonElement>('.primary')?.click();
+      const required = input.mode !== 'optional-update';
+      const banner = await until(() => get('update-banner'));
+      if (banner.textContent?.includes('必需更新') !== required || get('update-skip')) throw new Error('incorrect update offer');
+      if (!required && (await call<{ queued: boolean }>('qa.update.plan')).queued)
+        throw new Error('untouched optional update queued an installer');
+      if (input.mode === 'immediate-update') {
+        await click('join');
+        await until(async () => (await stats()).status === 'connected');
       }
+      await click('settings-open');
+      await click('update-open');
+      await until(() => get('updates-dialog'));
+      await capture('update.png');
+      if (input.mode === 'immediate-update') {
+        await call('qa.report', { ok: true, required, startedInCall: true });
+        await click('dialog-update-now');
+        return;
+      }
+      if (input.mode !== 'required-exit') {
+        await click('dialog-update-later');
+        await until(() => get('updates-dialog')?.textContent?.includes('退出时自动安装'));
+      }
+      closeModal();
+      if (!get('update-banner')) throw new Error('update notice disappeared');
       stage = 'verified installer queued on exit';
       const result = await call<{ queued: boolean; required: boolean; version: string }>('qa.update.plan');
       if (!result.queued || result.required !== required || result.version !== input.releaseVersion) throw new Error('verified package was not queued on exit');
-      await call('qa.report', { ok: true, optionalSkipChecked: !required, required, version: result.version });
-      await call('qa.update.exit');
+      await call('qa.report', { ok: true, required, version: result.version });
+      await call('qa.exit');
       return;
     }
     if (input.mode === 'persist') {

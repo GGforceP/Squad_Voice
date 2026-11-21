@@ -16,7 +16,7 @@ import type { AudioApp, Member, VoiceState } from './voice';
 
 const nativeBlank: Bootstrap = { configured: false, profileError: false, version: '', devices: { microphone: null, speaker: null }, preferences: initialPreferences, accompanimentSupported: false };
 const noRules: RoomRules = {};
-const noUpdate: UpdateState = { status: 'none', version: '', required: false };
+const noUpdate: UpdateState = { status: 'none', version: '', required: false, choice: 'none' };
 const colors = ['violet', 'sky', 'amber', 'sage', 'rose'];
 const initials = (value: string) => [...value.trim()].slice(0, value.charCodeAt(0) > 127 ? 1 : 2).join('').toUpperCase() || '队';
 const clock = (seconds: number) => String(Math.floor(seconds / 60)).padStart(2, '0') + ':' + String(seconds % 60).padStart(2, '0');
@@ -42,6 +42,27 @@ function Modal({ label, subtitle, icon, children, close }: { label: string; subt
       {children}
     </div>
   </dialog>;
+}
+
+function updateMessage({ status, version, choice }: UpdateState) {
+  switch (status) {
+    case 'available': return '有新版本 ' + version;
+    case 'downloading': return choice === 'now' ? '正在下载 ' + version + '，完成后自动安装' : '正在后台下载 ' + version;
+    case 'ready': return choice === 'now' ? '正在退出客户端并安装更新' : '更新已下载，退出时自动安装';
+    case 'error': return '暂时无法完成更新，请重试';
+    case 'disabled': return '当前连接未配置签名更新';
+    case 'current': return '当前没有可下载的新版本';
+    default: return '正在检查更新…';
+  }
+}
+
+function UpdateButtons({ state, now, later, dialog = false }: { state: UpdateState; now: () => void; later: () => void; dialog?: boolean }) {
+  if (!state.version || state.choice === 'now') return null;
+  return <>
+    <button className={dialog ? 'button primary' : 'link-button'} type="button" data-testid={dialog ? 'dialog-update-now' : 'update-now'} onClick={now}>立即更新</button>
+    {(state.choice !== 'later' || state.status === 'error') &&
+      <button className={dialog ? 'button soft' : 'link-button'} type="button" data-testid={dialog ? 'dialog-update-later' : 'update-later'} onClick={later}>稍后更新</button>}
+  </>;
 }
 
 export function App() {
@@ -72,7 +93,6 @@ export function App() {
   const [draggedSplit, setDraggedSplit] = useState<number | null>(null);
   const [updateInfo, setUpdateInfo] = useState<UpdateState>(noUpdate);
   const [updatesOpen, setUpdatesOpen] = useState(false);
-  const [skippedUpdate, setSkippedUpdate] = useState('');
   const [volumeFor, setVolumeFor] = useState<string | null>(null);
   const [now, setNow] = useState(Date.now());
   const [showHelp, setShowHelp] = useState(false);
@@ -290,6 +310,12 @@ export function App() {
     setUpdatesOpen(true);
     void call<UpdateState>('update.check', { interactive: true }).then(setUpdateInfo).catch(() => setUpdateInfo({ ...noUpdate, status: 'error' }));
   }
+  function updateNow() {
+    void call('update.now').catch(failure => engine.notice(message(failure, '无法开始更新。')));
+  }
+  function updateLater() {
+    void call<UpdateState>('update.later').then(setUpdateInfo).catch(failure => engine.notice(message(failure, '无法安排后台更新。')));
+  }
 
   async function listApps() {
     setListBusy(true);
@@ -381,11 +407,10 @@ export function App() {
         <span className="top-spacer" /><span className="private-badge"><LockKeyhole /> 仅受邀</span>
         <IconButton label={roster ? '隐藏成员列表' : '显示成员列表'} pressed={roster} onClick={() => setRoster(!roster)}><Users /></IconButton>
       </header>
-      {updateInfo.version && skippedUpdate !== updateInfo.version && ['available', 'downloading', 'ready'].includes(updateInfo.status) &&
+      {updateInfo.version && ['available', 'downloading', 'ready', 'error'].includes(updateInfo.status) &&
         <div className="update-banner" data-testid="update-banner" role="status"><Download size={15} />
-          <span>{updateInfo.status === 'downloading' ? '正在后台下载 ' + updateInfo.version : updateInfo.status === 'ready' ? '更新已下载，退出时可安装' : '有新版本 ' + updateInfo.version}</span>
-          {updateInfo.status === 'available' && !updateInfo.required && <button className="link-button" type="button" data-testid="update-download" onClick={() => void call('update.accept')}>下载更新</button>}
-          <button className="link-button" type="button" data-testid="update-skip" onClick={() => setSkippedUpdate(updateInfo.version)}>稍后</button>
+          <span>{updateMessage(updateInfo)}{updateInfo.required && ' · 必需更新'}</span>
+          <UpdateButtons state={updateInfo} now={updateNow} later={updateLater} />
         </div>}
       <div className={'room-content' + (chatOpen ? ' with-chat' : '')} style={chatOpen ? { '--voice-share': split + 'fr', '--chat-share': (100 - split) + 'fr' } as CSSProperties : undefined}>
       <div className="room-body">
@@ -464,14 +489,9 @@ export function App() {
       checkUpdate={checkForUpdate} />}
     {updatesOpen && <Modal label="客户端更新" subtitle={'当前版本 ' + boot.version} icon={<Download />} close={() => setUpdatesOpen(false)}>
       <div className="modal-form" data-testid="updates-dialog">
-        <p className="muted-text" role="status">{updateInfo.status === 'ready' ? '已下载 ' + updateInfo.version + '，退出时可安装。' :
-          updateInfo.status === 'downloading' ? '正在后台下载 ' + updateInfo.version + '。' :
-          updateInfo.status === 'available' ? '发现新版本 ' + updateInfo.version + '。' :
-          updateInfo.status === 'error' ? '暂时无法完成更新，请稍后重试。' :
-          updateInfo.status === 'disabled' ? '当前连接未配置签名更新。' :
-          updateInfo.status === 'current' ? '当前没有可下载的新版本。' : '正在检查更新…'}</p>
+        <p className="muted-text" role="status">{updateMessage(updateInfo)}{updateInfo.required && ' · 必需更新'}</p>
         <div className="modal-actions"><button className="button soft" type="button" onClick={() => setUpdatesOpen(false)}>关闭</button>
-          {updateInfo.version && ['available', 'error'].includes(updateInfo.status) && <button className="button primary" type="button" onClick={() => void call('update.accept')}>下载更新</button>}
+          <UpdateButtons state={updateInfo} now={updateNow} later={updateLater} dialog />
           {updateInfo.status === 'error' && !updateInfo.version && <button className="button primary" type="button" onClick={checkForUpdate}>重新检查</button>}
         </div>
       </div>
