@@ -1,4 +1,5 @@
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { lstatSync, readFileSync } from 'node:fs';
 import { isIP } from 'node:net';
 import { join } from 'node:path';
@@ -9,11 +10,11 @@ const flags = process.argv.slice(2);
 const staged = flags.length === 1 && flags[0] === '--staged';
 const worktree = flags.length === 1 && flags[0] === '--worktree';
 const seenPaths = new Set();
-const seenBlobs = new Set();
+const seenVersions = new Set();
 const failures = [];
 
-function git(args) {
-  const result = spawnSync('git', args, { cwd: root, encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 });
+function git(args, encoding = 'utf8') {
+  const result = spawnSync('git', args, { cwd: root, encoding, maxBuffer: 16 * 1024 * 1024 });
   if (result.error || result.status !== 0) throw new Error('Git could not read the requested public source.');
   return result.stdout;
 }
@@ -21,6 +22,15 @@ function git(args) {
 const runtimePath = /(?:^|\/)(?:\.git|\.cache|\.deps|node_modules|vendor|config|Client-Installer|Data|dist(?:-qa)?|artifacts|build|tmp)(?:\/|$)/i;
 const runtimeFile = /(?:^|\/)(?:\.env(?!\.example$)[^/]*|state\.json|keys\.json|geo\.json|update-key\.json|release\.json|id_(?:rsa|ed25519)(?:\.pub)?|known_hosts)$/i;
 const binaryFile = /\.(?:pem|key|crt|cer|pfx|p12|dpapi|db|sqlite\w*|log|exe|dll|zip|gz|tar|nupkg|p7s)$/i;
+// Keep the hashes of reviewed screenshots that remain in public history.
+const reviewedReadmeImages = new Map([
+  ['assets/readme/01-login.png', ['9fa0a725a64b44a9da829c9600e5eb626ba7ad8ae9250afbec1d5b042b39836f']],
+  ['assets/readme/02-channel-preview.png', ['e341b706fd9b06ccd3eb627e2cd861c5ed2cf9255daa4a87ea491b0e8530a1d4']],
+  ['assets/readme/03-voice-chat.png', ['9c6e8b3e3248ec6d82da09c53c209cc1af316c18d447e467690a521dc8b478ad']],
+  ['assets/readme/04-audio-settings.png', ['74a29ba70c877a95c1e72bbb22dee338bf761f933d383d57f8da96c725edbc79']],
+  ['assets/readme/05-cache.png', ['a15b367cb9fc9e0b320485282ce68fb6309b0f745f17055bc275b792ede2e8a5']],
+  ['assets/readme/06-update.png', ['949d7602ec0cd0b38941c6940d7aaabd0316376ec4e96df1ae8149844e845245']],
+]);
 const contentRules = [
   [/-----BEGIN (?:[A-Z]+ )*(?:PRIVATE KEY|CERTIFICATE)-----/i, 'private key or certificate material'],
   [/(?:gh[pousr]_[a-z0-9]{25,}|github_pat_[a-z0-9_]{40,}|AKIA[A-Z0-9]{16}|xox[baprs]-[a-z0-9-]{16,})/i, 'access token'],
@@ -55,6 +65,16 @@ function inspectPath(path) {
   if (runtimePath.test(path) || runtimeFile.test(path) || binaryFile.test(path)) failures.push([path, 'deployment data or build output']);
 }
 
+function inspectFile(path, contents) {
+  const reviewedHashes = reviewedReadmeImages.get(path);
+  if (!reviewedHashes) {
+    inspectContent(path, contents.toString('utf8'));
+    return;
+  }
+  const hash = createHash('sha256').update(contents).digest('hex');
+  if (!reviewedHashes.includes(hash)) failures.push([path, 'README screenshot differs from the reviewed image']);
+}
+
 function inspect(entries) {
   for (const entry of entries.split('\0').filter(Boolean)) {
     const tab = entry.indexOf('\t');
@@ -66,9 +86,10 @@ function inspect(entries) {
       continue;
     }
     const oid = staged ? type : object;
-    if (seenBlobs.has(oid)) continue;
-    seenBlobs.add(oid);
-    inspectContent(path, git(['cat-file', 'blob', oid]));
+    const version = path + '\0' + oid;
+    if (seenVersions.has(version)) continue;
+    seenVersions.add(version);
+    inspectFile(path, git(['cat-file', 'blob', oid], null));
   }
 }
 
@@ -77,7 +98,7 @@ if (worktree) {
     inspectPath(path);
     const file = join(root, path);
     if (!lstatSync(file).isFile()) { failures.push([path, 'non-regular source file']); continue; }
-    inspectContent(path, readFileSync(file, 'utf8'));
+    inspectFile(path, readFileSync(file));
   }
 } else if (staged) {
   inspect(git(['ls-files', '--stage', '-z']));
@@ -95,5 +116,5 @@ if (failures.length) {
   for (const [path, issue] of failures) console.error(path + ' — ' + issue);
   process.exitCode = 1;
 } else {
-  console.log('Public source checked (' + seenPaths.size + ' paths' + (worktree ? '' : ', ' + seenBlobs.size + ' file versions') + ').');
+  console.log('Public source checked (' + seenPaths.size + ' paths' + (worktree ? '' : ', ' + seenVersions.size + ' file versions') + ').');
 }
