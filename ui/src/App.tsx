@@ -704,7 +704,7 @@ function SettingsDialog({ boot, devices, engine, save, close, logout, checkUpdat
       <div className="default-device" data-testid="default-output">{boot.devices.speaker ?? 'Windows 未检测到默认扬声器'}</div>
       <div className="settings-divider" />
       <div className="mic-processing">
-        <label><input type="checkbox" data-testid="noise-suppression" checked={draft.noiseSuppression} onChange={event => update('noiseSuppression', event.target.checked)} /> 噪声抑制</label>
+        <label><input type="checkbox" data-testid="noise-suppression" checked={draft.noiseSuppression} onChange={event => update('noiseSuppression', event.target.checked)} /> 增强降噪</label>
         <label><input type="checkbox" data-testid="echo-cancellation" checked={draft.echoCancellation} onChange={event => update('echoCancellation', event.target.checked)} /> 回声消除</label>
         <label><input type="checkbox" data-testid="auto-gain-control" checked={draft.autoGainControl} onChange={event => update('autoGainControl', event.target.checked)} /> 自动增益</label>
       </div>
@@ -714,6 +714,10 @@ function SettingsDialog({ boot, devices, engine, save, close, logout, checkUpdat
         <option value={16000}>节省带宽 · 16 kbps</option>
         <option value={24000}>标准 · 24 kbps</option>
         <option value={40000}>清晰 · 40 kbps</option>
+        <option value={48000}>高音质 · 48 kbps</option>
+        <option value={64000}>高音质 · 64 kbps</option>
+        <option value={80000}>高音质 · 80 kbps</option>
+        <option value={96000}>高音质 · 96 kbps</option>
       </select>
       <MicCheck engine={engine} preferences={draft} />
       <div className="settings-divider" />

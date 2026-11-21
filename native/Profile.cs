@@ -20,7 +20,8 @@ namespace SquadVoice {
         public bool echoCancellation = true;
         public bool noiseSuppression = true;
         public bool autoGainControl = true;
-        public int voiceBitrate = 24000;
+        private static readonly int[] VoiceBitrates = { 16000, 24000, 40000, 48000, 64000, 80000, 96000 };
+        public int voiceBitrate = 64000;
         public int voiceShare = 67;
 
         public static Preferences Parse(Dictionary<string, object> obj) {
@@ -34,7 +35,7 @@ namespace SquadVoice {
             prefs.noiseSuppression = Json.Bool(obj, "noiseSuppression", true);
             prefs.autoGainControl = Json.Bool(obj, "autoGainControl", true);
             var bitrate = Json.Value(obj, "voiceBitrate");
-            if (bitrate is int && ((int)bitrate == 16000 || (int)bitrate == 24000 || (int)bitrate == 40000))
+            if (bitrate is int && Array.IndexOf(VoiceBitrates, (int)bitrate) >= 0)
                 prefs.voiceBitrate = (int)bitrate;
             var share = Json.Value(obj, "voiceShare");
             if (share is int) prefs.voiceShare = Math.Max(15, Math.Min(85, (int)share));

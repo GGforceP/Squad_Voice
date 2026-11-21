@@ -4,6 +4,7 @@ import {
 } from 'livekit-client';
 import { call, initialPreferences, message, subscribe } from './native';
 import type { Channel, MemberRole, Preferences, RoomRules, VoiceTicket } from './native';
+import { MicrophoneNoiseProcessor, microphoneOptions } from './microphone';
 
 setLogLevel(LogLevel.silent);
 
@@ -19,14 +20,6 @@ const blank = (): VoiceState => ({
   status: 'idle', channelId: null, members: [], since: null, mic: false, deafened: false, quality: 'unknown',
   error: '', playbackBlocked: false, sharing: null, musicVolume: 50, shareLevel: 75, musicBusy: false,
 });
-
-export function microphoneOptions(prefs: Preferences) {
-  return {
-    deviceId: prefs.microphoneId === 'default' ? undefined : { exact: prefs.microphoneId },
-    channelCount: 1, echoCancellation: prefs.echoCancellation,
-    noiseSuppression: prefs.noiseSuppression, autoGainControl: prefs.autoGainControl,
-  };
-}
 
 type AudioEntry = { track: RemoteAudioTrack; element: HTMLMediaElement; identity: string; music: boolean };
 type Share = { context: AudioContext; node: AudioWorkletNode; track: LocalAudioTrack | null; label: string; remove: () => void };
@@ -45,6 +38,7 @@ export class VoiceEngine {
   private micTests = new Set<AbortSignal>();
   private micRevision = 0;
   private appliedMicRevision = -1;
+  private noiseFallbackRoom: Room | null = null;
   private share: Share | null = null;
   private shareEpoch = 0;
   private generation = 0;
@@ -151,6 +145,7 @@ export class VoiceEngine {
     const old = this.room;
     const leaseId = this.leaseId;
     this.room = null;
+    this.noiseFallbackRoom = null;
     this.leaseId = '';
     this.wantsMic = false;
     this.ptt = false;
@@ -220,6 +215,35 @@ export class VoiceEngine {
     return !this.rules.listenUntil && this.room?.localParticipant.permissions?.canSubscribe !== false;
   }
 
+  private async createMicrophone(room: Room) {
+    const prefs = this.prefs;
+    const participant = room.localParticipant;
+    if (prefs.noiseSuppression && this.noiseFallbackRoom !== room) {
+      const [track] = await participant.createTracks({ audio: microphoneOptions(prefs, false) });
+      if (!(track instanceof LocalAudioTrack)) throw new DOMException('Microphone track unavailable', 'NotFoundError');
+      const processor = new MicrophoneNoiseProcessor(() => {
+        if (this.room !== room || track.getProcessor() !== processor) return;
+        this.noiseFallbackRoom = room;
+        this.micRevision++;
+        this.notice('增强降噪中断，正在切换到基础降噪。');
+        void this.syncMic();
+      });
+      try {
+        await track.setProcessor(processor);
+        return track;
+      } catch {
+        track.stop();
+        if (this.room === room) {
+          this.noiseFallbackRoom = room;
+          this.notice('增强降噪暂时无法启动，已切换到基础降噪。');
+        }
+      }
+    }
+    const [track] = await participant.createTracks({ audio: microphoneOptions(prefs) });
+    if (!track) throw new DOMException('Microphone track unavailable', 'NotFoundError');
+    return track;
+  }
+
   private syncMic() {
     const room = this.room;
     if (!room) return Promise.resolve();
@@ -234,9 +258,21 @@ export class VoiceEngine {
         const allowed = this.maySendMic();
         if (participant.isMicrophoneEnabled === allowed) return;
         const revision = this.micRevision;
-        await participant.setMicrophoneEnabled(allowed, microphoneOptions(this.prefs), {
-          audioPreset: { maxBitrate: this.prefs.voiceBitrate }, dtx: true, red: false, forceStereo: false,
-        });
+        if (allowed && !participant.getTrackPublication(Track.Source.Microphone)) {
+          const track = await this.createMicrophone(room);
+          if (this.room !== room || !this.maySendMic() || revision !== this.micRevision) {
+            track.stop();
+            return;
+          }
+          try {
+            await participant.publishTrack(track, {
+              audioPreset: { maxBitrate: this.prefs.voiceBitrate }, dtx: true, red: false, forceStereo: false,
+            });
+          } catch (error) {
+            track.stop();
+            throw error;
+          }
+        } else await participant.setMicrophoneEnabled(allowed);
         if (this.room !== room) return;
         if (allowed) this.appliedMicRevision = revision;
         if (allowed && !this.maySendMic()) await participant.setMicrophoneEnabled(false);
@@ -261,6 +297,7 @@ export class VoiceEngine {
   async setPreferences(next: Preferences, followChanges = false) {
     const previous = this.prefs;
     this.prefs = { ...next };
+    if (previous.noiseSuppression !== next.noiseSuppression) this.noiseFallbackRoom = null;
     if (previous.microphoneId !== next.microphoneId || previous.noiseSuppression !== next.noiseSuppression ||
         previous.echoCancellation !== next.echoCancellation || previous.autoGainControl !== next.autoGainControl ||
         previous.voiceBitrate !== next.voiceBitrate || (followChanges && next.microphoneId === 'default'))
@@ -416,13 +453,15 @@ export class VoiceEngine {
       result.push({ music, packets, bytes, energy, attached: element.isConnected, muted: element.muted });
     }
     const publication = this.room?.localParticipant.getTrackPublication(Track.Source.Microphone);
-    const settings = publication?.track?.mediaStreamTrack.getSettings();
+    const processor = publication?.track?.getProcessor();
+    const settings = processor instanceof MicrophoneNoiseProcessor ? processor.inputSettings() : publication?.track?.mediaStreamTrack.getSettings();
     return {
       status: this.state.status, users: this.state.members.length, mic: this.state.mic, tracks: result,
       sharing: Boolean(this.share),
       microphone: settings ? {
         noiseSuppression: settings.noiseSuppression, echoCancellation: settings.echoCancellation,
         autoGainControl: settings.autoGainControl, maxBitrate: publication?.options?.audioPreset?.maxBitrate,
+        enhancedNoiseSuppression: processor instanceof MicrophoneNoiseProcessor,
       } : null,
     };
   }

@@ -223,6 +223,13 @@ namespace SquadVoice {
                 Directory.CreateDirectory(webData);
                 var options = new CoreWebView2EnvironmentOptions();
                 if (lab) options.AdditionalBrowserArguments = "--use-fake-device-for-media-stream --autoplay-policy=no-user-gesture-required --disable-background-timer-throttling --disable-renderer-backgrounding";
+#if QA
+                if (lab) {
+                    var sample = Environment.GetEnvironmentVariable("SQUADVOICE_QA_AUDIO_FILE");
+                    if (File.Exists(sample) && sample.IndexOf('"') < 0)
+                        options.AdditionalBrowserArguments += " --use-file-for-fake-audio-capture=\"" + sample + "\"";
+                }
+#endif
                 var environment = await CoreWebView2Environment.CreateAsync(null, webData, options);
                 var windowOptions = environment.CreateCoreWebView2ControllerOptions();
                 windowOptions.IsInPrivateModeEnabled = false;

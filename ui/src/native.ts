@@ -7,12 +7,12 @@ export type Preferences = {
   echoCancellation: boolean;
   noiseSuppression: boolean;
   autoGainControl: boolean;
-  voiceBitrate: 16000 | 24000 | 40000;
+  voiceBitrate: 16000 | 24000 | 40000 | 48000 | 64000 | 80000 | 96000;
   voiceShare: number;
 };
 export const initialPreferences: Preferences = {
   microphoneId: 'default', speakerId: 'default', pushToTalk: false, hotkey: 'F8',
-  echoCancellation: true, noiseSuppression: true, autoGainControl: true, voiceBitrate: 24000, voiceShare: 67,
+  echoCancellation: true, noiseSuppression: true, autoGainControl: true, voiceBitrate: 64000, voiceShare: 67,
 };
 export type RememberedLogin = { username: string; password: string };
 export type Bootstrap = {

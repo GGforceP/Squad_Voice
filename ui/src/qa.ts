@@ -6,7 +6,7 @@ type Input = { number: number; mode: 'normal' | 'full' | 'config' | 'persist' | 
 type TrackReport = { music: boolean; packets: number; bytes: number; energy: number; attached: boolean; muted: boolean };
 type Stats = {
   status: string; users: number; mic: boolean; tracks: TrackReport[]; sharing: boolean;
-  microphone?: { noiseSuppression?: boolean; echoCancellation?: boolean; autoGainControl?: boolean; maxBitrate?: number };
+  microphone?: { noiseSuppression?: boolean; echoCancellation?: boolean; autoGainControl?: boolean; maxBitrate?: number; enhancedNoiseSuppression?: boolean };
 };
 const lab = window as Window & { squadVoiceLab?: (input: Input) => void; squadVoiceStats?: () => Promise<Stats> };
 const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
@@ -282,6 +282,9 @@ async function run(input: Input) {
       stage = 'new update control in audio settings';
       await click('settings-open');
       const audioSettings = await until(() => get('audio-settings'));
+      const preset = get<HTMLSelectElement>('voice-bitrate');
+      if (preset?.value !== '64000' || Array.from(preset.options, item => item.value).join(',') !== '16000,24000,40000,48000,64000,80000,96000')
+        throw new Error('incorrect microphone bitrate presets');
       const updateButton = get('update-open')?.getBoundingClientRect();
       const saveButton = get('save-audio-settings')?.getBoundingClientRect();
       if (!updateButton || !saveButton || updateButton.right >= saveButton.left || Math.abs(updateButton.top - saveButton.top) > 1 ||
@@ -395,7 +398,12 @@ async function run(input: Input) {
       return;
     }
     await until(() => get('voice-stage'));
-    await until(async () => (await stats()).mic);
+    const initialMicrophone = await until(async () => {
+      const report = await stats();
+      const mic = report.microphone;
+      return report.mic && mic?.enhancedNoiseSuppression && mic.maxBitrate === 64000 &&
+        mic.noiseSuppression === false && mic.echoCancellation && mic.autoGainControl ? mic : null;
+    });
 
     stage = 'five participants';
     await until(async () => (await stats()).users === 5, 35000);
@@ -426,14 +434,14 @@ async function run(input: Input) {
       await click('auto-gain-control');
       const bitrate = get<HTMLSelectElement>('voice-bitrate');
       if (!bitrate) throw new Error('missing bitrate control');
-      bitrate.value = '40000';
+      bitrate.value = '96000';
       bitrate.dispatchEvent(new Event('change', { bubbles: true }));
       await click('save-audio-settings');
       processing = await until(async () => {
         const report = await stats();
         const mic = report.microphone;
-        return report.mic && mic?.noiseSuppression === false && mic.echoCancellation === false &&
-          mic.autoGainControl === false && mic.maxBitrate === 40000 ? mic : null;
+        return report.mic && mic?.enhancedNoiseSuppression === false && mic.noiseSuppression === false &&
+          mic.echoCancellation === false && mic.autoGainControl === false && mic.maxBitrate === 96000 ? mic : null;
       }, 12000);
     }
     let isolation: unknown = null;
