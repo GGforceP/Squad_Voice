@@ -1,0 +1,24 @@
+{
+	admin off
+	persist_config off
+	default_sni {$SQUADVOICE_HOST}
+	servers {
+		protocols h1 h2
+	}
+	log {
+		exclude http.log.error
+	}
+}
+
+{$SQUADVOICE_HOST} {
+	tls force_automate {
+		issuer acme {
+			profile {$SQUADVOICE_ACME_PROFILE:shortlived}
+		}
+	}
+	reverse_proxy unix//run/squadvoice/api.sock {
+		header_up X-SquadVoice-Peer {http.request.remote.host}
+		header_up -Forwarded
+		header_up -X-Forwarded-For
+	}
+}

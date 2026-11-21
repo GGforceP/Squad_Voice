@@ -1,0 +1,5 @@
+services:
+  media:
+    ports:
+      - "7881:7881/tcp"
+      - "7882:7882/udp"

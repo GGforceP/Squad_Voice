@@ -1,0 +1,9 @@
+services:
+  backend:
+    volumes:
+      - type: bind
+        source: ./Client-Installer
+        target: /Client-Installer
+        read_only: true
+        bind:
+          create_host_path: false

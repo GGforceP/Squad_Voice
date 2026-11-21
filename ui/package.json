@@ -1,0 +1,27 @@
+{
+  "name": "squadvoice-windows-ui",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "typecheck": "tsc --noEmit",
+    "build": "vite build",
+    "build:qa": "vite build --mode qa --outDir dist-qa",
+    "qa": "node ../tests/desktop-qa.mjs"
+  },
+  "dependencies": {
+    "livekit-client": "2.23.0",
+    "lucide-react": "1.72.0",
+    "react": "19.3.1",
+    "react-dom": "19.3.1"
+  },
+  "devDependencies": {
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "@vitejs/plugin-react": "6.3.0",
+    "livekit-server-sdk": "2.19.3",
+    "typescript": "5.9.3",
+    "vite": "8.3.8"
+  }
+}

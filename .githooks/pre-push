@@ -1,0 +1,9 @@
+#!/bin/sh
+set -eu
+
+root=$(git rev-parse --show-toplevel)
+set --
+while read -r local_ref local_commit remote_ref remote_commit; do
+    if [ "$local_ref" != '(delete)' ]; then set -- "$@" "$local_commit"; fi
+done
+if [ "$#" -gt 0 ]; then node "$root/scripts/Check-PublicTree.mjs" "$@"; fi

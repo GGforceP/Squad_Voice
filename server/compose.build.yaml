@@ -1,0 +1,21 @@
+x-build: &build
+  context: ..
+  dockerfile: server/Dockerfile
+
+services:
+  media:
+    build:
+      <<: *build
+      target: media
+      args:
+        APT_MIRROR: ${SQUADVOICE_APT_MIRROR:-deb.debian.org}
+  backend:
+    build:
+      <<: *build
+      target: backend
+  edge:
+    build:
+      <<: *build
+      target: edge
+      args:
+        APT_MIRROR: ${SQUADVOICE_APT_MIRROR:-deb.debian.org}
