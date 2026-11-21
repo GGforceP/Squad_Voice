@@ -34,10 +34,10 @@ Squad Voice 源码采用 MIT 许可证。你可以把服务端部署在自己的
 
 ### 已实现的功能
 
-#### 客户端 · v0.5.3
+#### 客户端 · v0.5.4
 
-1. 三档可选语音音质，支持全局按住说话和单独调节队友音量。
-2. 跟随 Windows 默认麦克风与扬声器，支持麦克风测试、降噪、回声消除和自动增益。
+1. 七档麦克风发送码率，默认 64 kbps。支持全局按住说话和单独调节队友音量。
+2. 跟随 Windows 默认麦克风与扬声器，支持麦克风试听、本地 RNNoise 增强降噪、回声消除和自动增益。
 3. 共享指定应用的伴奏，独立调节伴奏音量。
 4. 加入前预览成员，加入后收发文字、表情和图片。
 5. 记住登录信息并自动登录，关闭窗口时收至系统托盘。
@@ -267,6 +267,11 @@ docker compose -f compose.yaml -f compose.build.yaml --profile public build
 
 ## 📝 更新日志
 
+### 0.5.4 · Windows 客户端
+
+- 麦克风新增 48、64、80 和 96 kbps 四档。24 kbps 保留为标准档，默认选中 64 kbps。
+- 麦克风通话和本机试听接入 RNNoise，压低键鼠敲击等环境声。增强降噪无法启动时会使用基础降噪。
+
 ### 0.5.3 · Windows 客户端
 
 - 修复部分 Windows 客户端首次打开时标题栏显示为白色，窗口按钮难以看清的问题。
@@ -299,6 +304,7 @@ docker compose -f compose.yaml -f compose.build.yaml --profile public build
 ## 🤝 鸣谢
 
 - **[LiveKit](https://github.com/livekit/livekit)** 提供 WebRTC 语音服务，**[Caddy](https://github.com/caddyserver/caddy)** 提供 HTTPS 入口与证书管理。
+- **RNNoise** 和 **Web Audio 降噪封装**用于客户端本地增强降噪。[RNNoise](https://github.com/xiph/rnnoise) · [Web Audio 降噪封装](https://github.com/sapphi-red/web-noise-suppressor)
 - **[Microsoft WebView2](https://developer.microsoft.com/microsoft-edge/webview2/)** 承载 Windows 客户端界面，**[NSIS](https://nsis.sourceforge.io/)** 用于打包安装器。
 - **[React](https://react.dev/)**、**[Vite](https://vite.dev/)** 和 **[Lucide](https://lucide.dev/)** 提供界面、构建工具和图标。
 - **[DB-IP Country Lite](https://db-ip.com/db/lite.php)** 提供可选用的地区数据。
