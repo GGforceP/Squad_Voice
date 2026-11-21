@@ -10,11 +10,11 @@ import type { Account, Bootstrap, Channel, Defaults, Identity, MemberAction, Mem
 import { VoiceEngine } from './voice';
 import { MicCheck } from './MicCheck';
 import { ChatPanel } from './ChatPanel';
-import { CacheSettings } from './CacheSettings';
+import { CacheSettings, CacheUsageButton } from './CacheSettings';
 import { canModerate, ChannelSplit, MemberMenu, RoleBadge, RoomRestrictions } from './ChannelControls';
 import type { AudioApp, Member, VoiceState } from './voice';
 
-const nativeBlank: Bootstrap = { configured: false, profileError: false, version: '0.5.0', devices: { microphone: null, speaker: null }, preferences: initialPreferences, accompanimentSupported: false };
+const nativeBlank: Bootstrap = { configured: false, profileError: false, version: '0.5.1', devices: { microphone: null, speaker: null }, preferences: initialPreferences, accompanimentSupported: false };
 const noRules: RoomRules = {};
 const noUpdate: UpdateState = { status: 'none', version: '', required: false };
 const colors = ['violet', 'sky', 'amber', 'sage', 'rose'];
@@ -354,6 +354,7 @@ export function App() {
       {admin ? <IconButton className="rail-lock" label="创建语音频道" onClick={() => setEditing('new')}><Plus size={19} /></IconButton> :
         <span className="rail-lock" title="私有小队"><LockKeyhole size={17} /></span>}
       <div className="rail-spacer" />
+      <CacheUsageButton open={cacheOpen} onOpen={() => setCacheOpen(true)} />
       <IconButton label="使用说明" onClick={() => setShowHelp(true)}><CircleHelp /></IconButton>
       <IconButton label="音频设置" test="settings-open-rail" onClick={() => setSettingsOpen(true)}><Settings /></IconButton>
     </aside>
@@ -460,7 +461,7 @@ export function App() {
     {memberMenu && modalMember && chatOpen && roster && canModerate(selectedRole, modalMember) && <MemberMenu member={modalMember} actor={selectedRole}
       x={memberMenu.x} y={memberMenu.y} close={dismissMemberMenu} control={(action, enabled) => controlMember(action, enabled, modalMember.id)} />}
     {settingsOpen && <SettingsDialog boot={boot} devices={devices} engine={engine} save={changePrefs} close={() => setSettingsOpen(false)} logout={() => void logout()}
-      openCache={() => { setSettingsOpen(false); setCacheOpen(true); }} checkUpdate={checkForUpdate} />}
+      checkUpdate={checkForUpdate} />}
     {updatesOpen && <Modal label="客户端更新" subtitle={'当前版本 ' + boot.version} icon={<Download />} close={() => setUpdatesOpen(false)}>
       <div className="modal-form" data-testid="updates-dialog">
         <p className="muted-text" role="status">{updateInfo.status === 'ready' ? '已下载 ' + updateInfo.version + '，退出时可安装。' :
@@ -652,9 +653,9 @@ function AccountDialog({ user, close, saved, passwordChanged }: {
   </Modal>;
 }
 
-function SettingsDialog({ boot, devices, engine, save, close, logout, openCache, checkUpdate }: {
+function SettingsDialog({ boot, devices, engine, save, close, logout, checkUpdate }: {
   boot: Bootstrap; devices: MediaDeviceInfo[]; engine: VoiceEngine; save: (value: Preferences) => Promise<void>;
-  close: () => void; logout: () => void; openCache: () => void; checkUpdate: () => void;
+  close: () => void; logout: () => void; checkUpdate: () => void;
 }) {
   const [draft, setDraft] = useState(boot.preferences);
   const [error, setError] = useState('');
@@ -669,10 +670,6 @@ function SettingsDialog({ boot, devices, engine, save, close, logout, openCache,
   };
   return <Modal label="音频设置" subtitle="设置语音设备、麦克风处理和通话音质。"  icon={<SlidersHorizontal />} close={close}>
     <form className="modal-form" onSubmit={submit} data-testid="audio-settings">
-      <div className="settings-navigation"><span>音频</span>
-        <button type="button" className="link-button" data-testid="update-open" disabled={busy} onClick={checkUpdate}>检查更新 <ChevronRight size={13} /></button>
-        <button type="button" className="link-button" data-testid="cache-open" disabled={busy} onClick={openCache}>缓存管理 <ChevronRight size={13} /></button>
-      </div>
       <label htmlFor="mic-device"><Mic /> 麦克风</label>
       <select id="mic-device" value={draft.microphoneId} onChange={e => update('microphoneId', e.target.value)}>
         <option value="default">跟随 Windows 默认设备</option>
@@ -703,7 +700,11 @@ function SettingsDialog({ boot, devices, engine, save, close, logout, openCache,
       <label className="toggle-label"><span><strong>全局按住说话</strong><small>游戏在前台时也可使用，松开即静音。</small></span><input type="checkbox" checked={draft.pushToTalk} onChange={e => update('pushToTalk', e.target.checked)} /></label>
       {draft.pushToTalk && <label className="hotkey-picker">快捷键<select value={draft.hotkey} onChange={e => update('hotkey', e.target.value as Preferences['hotkey'])}>{['F6', 'F7', 'F8', 'F9', 'F10'].map(key => <option key={key}>{key}</option>)}</select></label>}
       {error && <div className="form-error" role="alert">{error}</div>}
-      <div className="modal-actions settings-actions"><button className="link-button" type="button" onClick={logout}><LogOut /> 退出账号</button><button className="button primary" type="submit" data-testid="save-audio-settings" disabled={busy}>保存设置</button></div>
+      <div className="modal-actions audio-settings-actions">
+        <button className="link-button" type="button" onClick={logout}><LogOut /> 退出账号</button>
+        <button className="button check-update-button" type="button" data-testid="update-open" disabled={busy} onClick={checkUpdate}><Download /> 检查更新</button>
+        <button className="button primary" type="submit" data-testid="save-audio-settings" disabled={busy}>保存设置</button>
+      </div>
     </form>
   </Modal>;
 }
