@@ -36,13 +36,15 @@ jobs:
           npm install --global pnpm@11.25.0
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           ./scripts/Get-BuildDeps.ps1 -SkipLiveKit
-          ./scripts/Build-Windows.ps1 -StageDirectory (Join-Path $env:RUNNER_TEMP 'squad-voice-build') -ArtifactDirectory './dist'
-          $version = (Get-Content -LiteralPath 'VERSION' -Raw).Trim()
-          $name = "Squad.Voice.$version.x64.Setup.exe"
-          Rename-Item -LiteralPath "dist/Squad Voice $version x64 Setup.exe" -NewName $name
+          $stage = Join-Path $env:RUNNER_TEMP 'squad-voice-build'
+          ./scripts/Build-Windows.ps1 -StageDirectory $stage -ArtifactDirectory './dist'
+          ./tests/WindowsInstallerChecks.ps1 -StageDirectory $stage -TestDirectory (Join-Path $env:RUNNER_TEMP 'squad-voice-installer-checks')
+          $release = if (Test-Path -LiteralPath 'installer/RELEASE') { (Get-Content -LiteralPath 'installer/RELEASE' -Raw).Trim() } else { (Get-Content -LiteralPath 'VERSION' -Raw).Trim() }
+          $name = "Squad.Voice.$release.x64.Setup.exe"
+          Rename-Item -LiteralPath "dist/Squad Voice $release x64 Setup.exe" -NewName $name
           $hash = (Get-FileHash -LiteralPath (Join-Path 'dist' $name) -Algorithm SHA256).Hash.ToLowerInvariant()
           "$hash  $name" | Set-Content -LiteralPath 'dist/SHA256SUMS' -Encoding utf8
-          Copy-Item -LiteralPath 'VERSION' -Destination 'dist/VERSION'
+          Set-Content -LiteralPath 'dist/RELEASE' -Value $release -Encoding utf8
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: windows-x64
@@ -65,6 +67,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          $version = (Get-Content -LiteralPath 'dist/VERSION' -Raw).Trim()
-          gh release create "v$version" "dist/Squad.Voice.$version.x64.Setup.exe" 'dist/SHA256SUMS' --repo "$env:GITHUB_REPOSITORY" --target "$env:GITHUB_SHA" --title "Squad Voice $version" --generate-notes
+          $release = (Get-Content -LiteralPath 'dist/RELEASE' -Raw).Trim()
+          $notes = if ($release.EndsWith('-fix')) { '--notes=' } else { '--generate-notes' }
+          gh release create "v$release" "dist/Squad.Voice.$release.x64.Setup.exe" 'dist/SHA256SUMS' --repo "$env:GITHUB_REPOSITORY" --target "$env:GITHUB_SHA" --title "Squad Voice $release" $notes
           exit $LASTEXITCODE

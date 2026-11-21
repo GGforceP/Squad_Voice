@@ -9,6 +9,8 @@ Unicode true
 !ifndef APP_VERSION
   !define APP_VERSION "0.5.0"
 !endif
+!define DESKTOP_LINK_NAME "SquadVoice.lnk"
+!define LEGACY_DESKTOP_LINK_NAME "Squad Voice.lnk"
 Name "Squad Voice"
 OutFile "${SETUP}"
 InstallDir "$EXEDIR\Squad Voice"
@@ -30,6 +32,7 @@ Var LockHandle
 Var MetadataTemp
 Var MigrateLegacy
 Var FromUpdater
+Var DesktopDirectory
 Var DesktopLink
 
 !define MUI_ABORTWARNING
@@ -65,17 +68,21 @@ Var DesktopLink
   ClearErrors
 !macroend
 
-!macro SetDesktopLink
+!macro SetDesktopDirectory
   !ifdef TEST_DESKTOP
-    StrCpy $DesktopLink "${TEST_DESKTOP}\Squad Voice.lnk"
+    StrCpy $DesktopDirectory "${TEST_DESKTOP}"
   !else
-    StrCpy $DesktopLink "$DESKTOP\Squad Voice.lnk"
+    StrCpy $DesktopDirectory "$DESKTOP"
   !endif
 !macroend
 
 !macro ShortcutTarget name
   Function ${name}
     StrCpy $3 ""
+    ${IfNot} ${FileExists} "$DesktopLink"
+      Push $3
+      Return
+    ${EndIf}
     System::Call 'ole32::CoCreateInstance(g "{00021401-0000-0000-C000-000000000046}", p 0, i 1, g "{000214F9-0000-0000-C000-000000000046}", *p .r1) i.r0'
     ${If} $0 == 0
       System::Call '$1->0(g "{0000010B-0000-0000-C000-000000000046}", *p .r2) i.r0'
@@ -359,9 +366,7 @@ Section "Squad Voice"
     ${EndIf}
   ${EndIf}
   Call ArchiveUpdate
-  ${If} $FromUpdater == 1
-    Call RefreshDesktopLink
-  ${EndIf}
+  Call RefreshDesktopLink
   !insertmacro UnlockData
   Goto install_done
 
@@ -393,17 +398,54 @@ install_done:
 SectionEnd
 
 Function RefreshDesktopLink
-  !insertmacro SetDesktopLink
-  ${If} ${FileExists} "$DesktopLink"
-    Call ReadDesktopLink
-    Pop $0
-    ${If} $0 != "$INSTDIR\SquadVoice.exe"
-    ${AndIf} $0 != "$PreviousPath\SquadVoice.exe"
+  !insertmacro SetDesktopDirectory
+  StrCpy $DesktopLink "$DesktopDirectory\${DESKTOP_LINK_NAME}"
+  Call ReadDesktopLink
+  Pop $4
+  StrCpy $DesktopLink "$DesktopDirectory\${LEGACY_DESKTOP_LINK_NAME}"
+  Call ReadDesktopLink
+  Pop $6
+  ${If} $4 == "$INSTDIR\SquadVoice.exe"
+    ${If} $6 == "$INSTDIR\SquadVoice.exe"
+      Delete "$DesktopLink"
+    ${EndIf}
+    Return
+  ${EndIf}
+  ${If} $6 != "$INSTDIR\SquadVoice.exe"
+    ${If} $FromUpdater != 1
+    ${OrIf} ${FileExists} "$DesktopDirectory\${DESKTOP_LINK_NAME}"
       Return
     ${EndIf}
   ${EndIf}
-  SetOutPath "$INSTDIR"
-  CreateShortCut "$DesktopLink" "$INSTDIR\SquadVoice.exe" "" "$INSTDIR\SquadVoice.exe" 0 SW_SHOWNORMAL "" "Squad Voice"
+
+  ; A renamed shortcut already launches the newly installed executable.
+  FindFirst $4 $5 "$DesktopDirectory\*.lnk"
+  ${DoWhile} $5 != ""
+    ${If} $5 != "${LEGACY_DESKTOP_LINK_NAME}"
+      StrCpy $DesktopLink "$DesktopDirectory\$5"
+      Call ReadDesktopLink
+      Pop $0
+      ${If} $0 == "$INSTDIR\SquadVoice.exe"
+        FindClose $4
+        ${If} $6 == "$INSTDIR\SquadVoice.exe"
+          Delete "$DesktopDirectory\${LEGACY_DESKTOP_LINK_NAME}"
+        ${EndIf}
+        Return
+      ${EndIf}
+    ${EndIf}
+    FindNext $4 $5
+  ${Loop}
+  FindClose $4
+
+  StrCpy $DesktopLink "$DesktopDirectory\${DESKTOP_LINK_NAME}"
+  ${IfNot} ${FileExists} "$DesktopLink"
+    ${If} $6 == "$INSTDIR\SquadVoice.exe"
+      Rename "$DesktopDirectory\${LEGACY_DESKTOP_LINK_NAME}" "$DesktopLink"
+    ${Else}
+      SetOutPath "$INSTDIR"
+      CreateShortCut "$DesktopLink" "$INSTDIR\SquadVoice.exe" "" "$INSTDIR\SquadVoice.exe" 0 SW_SHOWNORMAL "" "Squad Voice"
+    ${EndIf}
+  ${EndIf}
 FunctionEnd
 
 Function un.onInit
@@ -518,6 +560,15 @@ cache_locked:
   SetErrors
 FunctionEnd
 
+!macro RemoveDesktopLink name
+  StrCpy $DesktopLink "$DesktopDirectory\${name}"
+  Call un.ReadDesktopLink
+  Pop $0
+  ${If} $0 == "$INSTDIR\SquadVoice.exe"
+    Delete "$DesktopLink"
+  ${EndIf}
+!macroend
+
 Section "Uninstall"
   SetOutPath "$TEMP"
   System::Call 'kernel32::GetFileAttributesW(w "$INSTDIR\Data") i.r0'
@@ -534,14 +585,9 @@ Section "Uninstall"
     Goto uninstall_locked
   ${EndIf}
   !insertmacro UnlockData
-  !insertmacro SetDesktopLink
-  ${If} ${FileExists} "$DesktopLink"
-    Call un.ReadDesktopLink
-    Pop $0
-    ${If} $0 == "$INSTDIR\SquadVoice.exe"
-      Delete "$DesktopLink"
-    ${EndIf}
-  ${EndIf}
+  !insertmacro SetDesktopDirectory
+  !insertmacro RemoveDesktopLink "${DESKTOP_LINK_NAME}"
+  !insertmacro RemoveDesktopLink "${LEGACY_DESKTOP_LINK_NAME}"
   Delete "$INSTDIR\SquadVoice.exe.config"
   Delete "$INSTDIR\Microsoft.Web.WebView2.Core.dll"
   Delete "$INSTDIR\Microsoft.Web.WebView2.WinForms.dll"

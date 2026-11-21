@@ -432,7 +432,7 @@ namespace SquadVoice {
                 }
             }
             return new {
-                configured = current.endpoint != null, profileError = store.ReadError, version = AppVersion,
+                configured = current.endpoint != null, profileError = store.ReadError, version = ReleaseBuild.DisplayVersion,
                 devices = AudioDefaults.Read(), preferences = preferences, accompanimentSupported = ProcessCapture.Supported,
                 account = account, remembered = account == null && !api.SignedIn ? ForLoginForm(current) : null, loginError = loginError
             };

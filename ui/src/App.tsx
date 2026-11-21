@@ -14,7 +14,7 @@ import { CacheSettings, CacheUsageButton } from './CacheSettings';
 import { canModerate, ChannelSplit, MemberMenu, RoleBadge, RoomRestrictions } from './ChannelControls';
 import type { AudioApp, Member, VoiceState } from './voice';
 
-const nativeBlank: Bootstrap = { configured: false, profileError: false, version: '0.5.1', devices: { microphone: null, speaker: null }, preferences: initialPreferences, accompanimentSupported: false };
+const nativeBlank: Bootstrap = { configured: false, profileError: false, version: '', devices: { microphone: null, speaker: null }, preferences: initialPreferences, accompanimentSupported: false };
 const noRules: RoomRules = {};
 const noUpdate: UpdateState = { status: 'none', version: '', required: false };
 const colors = ['violet', 'sky', 'amber', 'sage', 'rose'];
@@ -339,7 +339,7 @@ export function App() {
           <button className="link-button" onClick={() => setProfileOpen(true)} disabled={loginBusy} data-testid="profile-open"><Settings /> 接入配置</button></div>
       </section>
     </div>
-    <div className="login-bottom"><span>仅限受邀成员</span><span>Windows · v{boot.version}</span></div>
+    <div className="login-bottom"><span>仅限受邀成员</span><span>Windows{boot.version && ` · v${boot.version}`}</span></div>
     {profileOpen && <ProfileDialog configured={boot.configured} close={() => setProfileOpen(false)} onSaved={changed => {
       setBoot(b => ({ ...b, configured: true, profileError: false }));
       if (changed) { setLoginName(''); setPassword(''); }
