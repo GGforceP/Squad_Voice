@@ -38,7 +38,8 @@ jobs:
           ./scripts/Get-BuildDeps.ps1 -SkipLiveKit
           ./scripts/Build-Windows.ps1 -StageDirectory (Join-Path $env:RUNNER_TEMP 'squad-voice-build') -ArtifactDirectory './dist'
           $version = (Get-Content -LiteralPath 'VERSION' -Raw).Trim()
-          $name = "Squad Voice $version x64 Setup.exe"
+          $name = "Squad.Voice.$version.x64.Setup.exe"
+          Rename-Item -LiteralPath "dist/Squad Voice $version x64 Setup.exe" -NewName $name
           $hash = (Get-FileHash -LiteralPath (Join-Path 'dist' $name) -Algorithm SHA256).Hash.ToLowerInvariant()
           "$hash  $name" | Set-Content -LiteralPath 'dist/SHA256SUMS' -Encoding utf8
           Copy-Item -LiteralPath 'VERSION' -Destination 'dist/VERSION'
@@ -65,5 +66,5 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           $version = (Get-Content -LiteralPath 'dist/VERSION' -Raw).Trim()
-          gh release create "v$version" "dist/Squad Voice $version x64 Setup.exe" 'dist/SHA256SUMS' --repo "$env:GITHUB_REPOSITORY" --target "$env:GITHUB_SHA" --title "Squad Voice $version" --generate-notes
+          gh release create "v$version" "dist/Squad.Voice.$version.x64.Setup.exe" 'dist/SHA256SUMS' --repo "$env:GITHUB_REPOSITORY" --target "$env:GITHUB_SHA" --title "Squad Voice $version" --generate-notes
           exit $LASTEXITCODE
