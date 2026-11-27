@@ -90,7 +90,7 @@ namespace SquadVoice {
             var before = ChatCache.Number(Json.Value(args, "before"));
             var after = ChatCache.Number(Json.Value(args, "after"));
             var limit = Math.Max(1, Math.Min(30, ChatCache.Number(Json.Value(args, "limit"))));
-            var id = "p-" + channel + "-" + ChatCache.Hash(before + "/" + after + "/" + limit);
+            var id = "p-" + ChatCache.ConversationKey(channel) + "-" + ChatCache.Hash(before + "/" + after + "/" + limit);
             var snapshot = await cache.Run(() => new { version = cache.Generation, data = cache.Get(scope, id) });
             var storedTag = Json.Text(snapshot.data, "tag", 64);
             var body = new { channelId = channel, before = before, after = after, limit = limit, known = storedTag };
@@ -104,20 +104,24 @@ namespace SquadVoice {
         }
 
         public async Task<object> Image(Dictionary<string, object> args) {
+            return new { data = Convert.ToBase64String(await ImageBytes(args)) };
+        }
+
+        public async Task<byte[]> ImageBytes(Dictionary<string, object> args) {
             CheckReady();
             var scope = api.CacheScope;
             var channel = Channel(args);
             var id = ChatCache.Number(Json.Value(args, "id"));
             if (id <= 0) throw new FriendlyError("无法读取这张图片。");
-            var name = "i-" + channel + "-" + id.ToString(CultureInfo.InvariantCulture);
+            var name = "i-" + ChatCache.ConversationKey(channel) + "-" + id.ToString(CultureInfo.InvariantCulture);
             var snapshot = await cache.Run(() => new { version = cache.Generation, bytes = cache.Read(scope, name) });
             var media = await api.DownloadImage(channel, id, snapshot.bytes != null);
             var content = media ?? snapshot.bytes;
             if (content == null) throw new FriendlyError("图片缓存已清理，请重试。");
-            return await cache.Run<object>(() => {
+            return await cache.Run(() => {
                 if (snapshot.version != cache.Generation) throw new FriendlyError("这张图片已更新，请重试。", "cache_changed");
                 if (media != null) cache.Write(scope, name, media);
-                return new { data = Convert.ToBase64String(content) };
+                return content;
             });
         }
 
@@ -147,8 +151,8 @@ namespace SquadVoice {
         }
 
         private static string Channel(Dictionary<string, object> args) {
-            var channel = Json.Text(args, "channelId", 48);
-            if (!Json.IsId(channel)) throw new FriendlyError("请先选择语音频道。");
+            var channel = Json.Text(args, "channelId", ChatCache.ConversationLimit);
+            if (ChatCache.ConversationKey(channel) == null) throw new FriendlyError("请先选择会话。");
             return channel;
         }
     }

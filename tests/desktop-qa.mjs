@@ -4,15 +4,15 @@ import { createServer as createTcp } from 'node:net';
 import { createSocket } from 'node:dgram';
 import { randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
 import { spawn, spawnSync } from 'node:child_process';
-import { mkdir, readFile, writeFile, copyFile, unlink } from 'node:fs/promises';
+import { cp, mkdir, readFile, writeFile, copyFile, unlink } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const require = createRequire(new URL('../ui/package.json', import.meta.url));
 const { AccessToken, RoomServiceClient, TrackSource } = require('livekit-server-sdk');
 const [stage, output, livekit, mode, backend, updateFolder, updateKey] = process.argv.slice(2);
-if (!stage || !output || !livekit) throw new Error('Usage: desktop-qa.mjs <app-stage> <new-output-dir> <livekit-server.exe> [voice-only|full|optional-update|forced-update] [server.test.exe] [update-fixture public-key.json]');
-const updateTest = mode === 'optional-update' || mode === 'forced-update';
+if (!stage || !output || !livekit) throw new Error('Usage: desktop-qa.mjs <app-stage> <new-output-dir> <livekit-server.exe> [voice-only|full|optional-update|forced-update|immediate-update|required-exit] [server.test.exe] [update-fixture public-key.json]');
+const updateTest = ['optional-update', 'forced-update', 'immediate-update', 'required-exit'].includes(mode);
 const expectMusic = !updateTest && mode !== 'voice-only';
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const random = () => randomBytes(24).toString('hex');
@@ -138,24 +138,45 @@ try {
     launch(tone, ['540']);
     launch(join(out, 'SquadToneB.exe'), ['1390']);
   }
-  async function startClient(index, kind, existingDirectory) {
+  async function startClient(index, kind, existingDirectory, installation = stage) {
     const directory = existingDirectory ?? join(out, 'client-' + (index + 1));
     if (!existingDirectory) await mkdir(directory);
     const a = accounts[index];
     const input = { number: index + 1, mode: kind, endpoint, username: a.username, password: a.password, expectMusic, accountEndpoints: Boolean(backend), releaseVersion };
     return {
       directory,
-      process: launch(join(stage, 'SquadVoice.exe'), [], {
-        cwd: stage, env: { ...process.env, SQUADVOICE_DATA_DIR: directory, SQUADVOICE_QA_INPUT: JSON.stringify(input) },
+      process: launch(join(installation, 'SquadVoice.exe'), [], {
+        cwd: installation, env: { ...process.env, SQUADVOICE_DATA_DIR: directory, SQUADVOICE_QA_INPUT: JSON.stringify(input) },
       }),
     };
   }
   if (updateTest) {
     if (!backend || !updateFolder || !updateKey) throw new Error('update tests require the backend, signed release fixture, and its public key');
-    const app = await startClient(0, mode);
-    const report = await wait(async () => JSON.parse(await readFile(join(app.directory, 'qa-result.json'), 'utf8')), 30000);
-    if (!report.ok) throw new Error(JSON.stringify(report));
+    const installation = join(out, 'Installed Squad Voice');
+    await cp(stage, installation, { recursive: true });
+    const app = await startClient(0, mode, undefined, installation);
+    const resultPath = join(app.directory, 'qa-result.json');
+    const readReport = async () => JSON.parse(await readFile(resultPath, 'utf8'));
+    const before = await wait(readReport, 45000);
+    if (!before.ok) throw new Error(JSON.stringify(before));
     await wait(() => app.process.exitCode === 0, 10000);
+    await wait(async () => {
+      const marker = await readFile(join(installation, 'app', 'qa-update-installed.txt'), 'utf8');
+      return marker.trim() === releaseVersion;
+    }, 15000);
+    let reopened = false;
+    if (mode === 'immediate-update') {
+      const after = await wait(async () => {
+        const result = await readReport();
+        return result.reopened || !result.ok ? result : null;
+      }, 24000);
+      if (!after.ok || !after.defaultScreen) throw new Error(JSON.stringify(after));
+      reopened = true;
+    } else {
+      await sleep(3000);
+      if ((await readReport()).reopened) throw new Error('deferred update unexpectedly restarted the client');
+    }
+    const report = { ...before, installed: true, reopened };
     await writeFile(join(out, 'desktop-qa.json'), JSON.stringify(report, null, 2));
     console.log(JSON.stringify(report));
   } else {
@@ -184,6 +205,11 @@ try {
     const report = await wait(async () => JSON.parse(await readFile(join(client.directory, 'qa-result.json'), 'utf8')), 65000);
     receipts[index] = { client: index + 1, ...report };
   }));
+  if (backend && receipts[0].chatVerified) {
+    const saved = await readFile(join(five[0].directory, 'downloaded-chat-image.png'));
+    if (saved.toString('ascii', 1, 4) !== 'PNG' || saved.readUInt32BE(16) !== 512 || saved.readUInt32BE(20) !== 1440)
+      throw new Error('Downloaded image is not the original portrait PNG.');
+  }
   const secured = await Promise.all(five.map(async (client, index) => {
     const content = await readFile(join(client.directory,'connection.dpapi'));
     const known = [endpoint, accounts[index].username, accounts[index].password, apiKey, secret];

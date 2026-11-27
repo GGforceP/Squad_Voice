@@ -25,7 +25,8 @@ namespace SquadVoice {
             try {
                 var window = new MainWindow();
                 Application.Run(window);
-                if (window.UpdateRequested != null) window.UpdateRequested.Start(AppDomain.CurrentDomain.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar));
+                if (window.UpdateRequested != null)
+                    window.UpdateRequested.Start(AppDomain.CurrentDomain.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar), window.RestartRequested);
                 else if (window.RestartRequested) Process.Start(new ProcessStartInfo {
                     FileName = Application.ExecutablePath, WorkingDirectory = AppDomain.CurrentDomain.BaseDirectory,
                     UseShellExecute = false
@@ -113,7 +114,11 @@ namespace SquadVoice {
             if (lab) {
                 var input = Json.Object(Json.Serializer().DeserializeObject(labInput));
                 var mode = Json.Text(input, "mode", 20);
-                if (mode == "optional-update" || mode == "forced-update") updateVersion = "0.0.0";
+                if (File.Exists(Path.Combine(installDirectory, "app", "qa-update-installed.txt"))) {
+                    input["mode"] = "update-reopened";
+                    labInput = Json.Serializer().Serialize(input);
+                } else if (mode == "optional-update" || mode == "forced-update" || mode == "immediate-update" || mode == "required-exit")
+                    updateVersion = "0.0.0";
             }
 #endif
             updates = new ClientUpdater(api, updateVersion, dataDirectory, SendEvent);
@@ -174,18 +179,25 @@ namespace SquadVoice {
             Activate();
         }
 
-        private async Task Quit(bool restart = false) {
+        private async Task InstallImmediately() {
+            if (quitting) return;
+            var update = await updates.InstallNow();
+            if (update != null) await Quit(true, update);
+        }
+
+        private async Task Quit(bool restart = false, UpdateLaunch update = null) {
             if (quitting) return;
             quitting = true;
-            RestartRequested = restart;
-            if (!restart && !lab) {
-                var update = await updates.OnExit();
-                if (update != null) {
-                    var buttons = update.Release.Required ? MessageBoxButtons.OK : MessageBoxButtons.OKCancel;
-                    if (MessageBox.Show(this, "已下载 Squad Voice " + update.Release.Version + "。确认后会在后台安装并更新桌面快捷方式。",
-                        "Squad Voice 更新", buttons, MessageBoxIcon.Information) == DialogResult.OK) UpdateRequested = update;
-                }
+            if (update == null) update = await updates.OnExit();
+            if (update == null && updates.Required) {
+                quitting = false;
+                RestoreFromTray();
+                if (!api.SignedIn)
+                    MessageBox.Show(this, "请重新登录以完成必需更新。", "Squad Voice 更新", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
             }
+            UpdateRequested = update;
+            RestartRequested = restart || (update != null && updates.RestartOnInstall);
             SendEvent("app.hidden", true);
             ReleaseHotkey();
             StopCapture();
@@ -194,14 +206,30 @@ namespace SquadVoice {
             if (!IsDisposed) Close();
         }
 
+        protected override void OnHandleCreated(EventArgs e) {
+            base.OnHandleCreated(e);
+            const int immersiveDarkMode = 20;
+            const int legacyImmersiveDarkMode = 19;
+            const uint invalidate = 0x0001, updateNow = 0x0100, frame = 0x0400;
+            int dark = 1;
+            if (DwmSetWindowAttribute(Handle, immersiveDarkMode, ref dark, sizeof(int)) < 0)
+                DwmSetWindowAttribute(Handle, legacyImmersiveDarkMode, ref dark, sizeof(int));
+            RedrawWindow(Handle, IntPtr.Zero, IntPtr.Zero, invalidate | updateNow | frame);
+        }
+
         private async Task Initialize() {
             try {
-                int dark = 1;
-                DwmSetWindowAttribute(Handle, 20, ref dark, sizeof(int));
                 var webData = Path.Combine(store.DirectoryPath, "WebView");
                 Directory.CreateDirectory(webData);
                 var options = new CoreWebView2EnvironmentOptions();
                 if (lab) options.AdditionalBrowserArguments = "--use-fake-device-for-media-stream --autoplay-policy=no-user-gesture-required --disable-background-timer-throttling --disable-renderer-backgrounding";
+#if QA
+                if (lab) {
+                    var sample = Environment.GetEnvironmentVariable("SQUADVOICE_QA_AUDIO_FILE");
+                    if (File.Exists(sample) && sample.IndexOf('"') < 0)
+                        options.AdditionalBrowserArguments += " --use-file-for-fake-audio-capture=\"" + sample + "\"";
+                }
+#endif
                 var environment = await CoreWebView2Environment.CreateAsync(null, webData, options);
                 var windowOptions = environment.CreateCoreWebView2ControllerOptions();
                 windowOptions.IsInPrivateModeEnabled = false;
@@ -321,7 +349,13 @@ namespace SquadVoice {
                     return await api.Feature("member/control", new { channelId = Json.Text(args, "channelId", 48),
                         targetId = Json.Text(args, "targetId", 64), action = Json.Text(args, "action", 24), enabled = Json.Bool(args, "enabled") }, CancellationToken.None);
                 case "update.check": return await updates.Check(Json.Bool(args, "interactive"));
-                case "update.accept": return updates.Accept();
+                case "update.now":
+                    BeginInvoke(new Action(async () => await InstallImmediately()));
+                    return null;
+                case "update.later": return updates.InstallLater();
+                case "group.create": return await api.Feature("group/create", ReadGroup(args), CancellationToken.None);
+                case "group.update": return await api.Feature("group/update", ReadGroup(args), CancellationToken.None);
+                case "group.delete": return await api.Feature("group/delete", new { id = Json.Text(args, "id", 48) }, CancellationToken.None);
                 case "channel.create": return await api.Feature("channel/create", ReadChannel(args), CancellationToken.None);
                 case "channel.update": return await api.Feature("channel/update", ReadChannel(args), CancellationToken.None);
                 case "channel.delete": return await api.Feature("channel/delete", new { id = Json.Text(args, "id", 48) }, CancellationToken.None);
@@ -329,6 +363,13 @@ namespace SquadVoice {
                 case "chat.history": return await chat.History(args);
                 case "chat.send": return await chat.Send(args);
                 case "chat.image": return await chat.Image(args);
+                case "chat.download": return await SaveChatImage(args);
+                case "chat.copy":
+                    var text = Json.Text(args, "text", 2000);
+                    if (text.Length == 0) return false;
+                    try { Clipboard.SetText(text); }
+                    catch (ExternalException) { throw new FriendlyError("剪贴板正在使用，请稍后重试。"); }
+                    return true;
                 case "chat.delete": return await chat.Delete(args);
                 case "cache.usage": return await cache.Run(cache.Usage);
                 case "cache.pick":
@@ -384,14 +425,13 @@ namespace SquadVoice {
                     var planned = await updates.OnExit();
                     return new { queued = planned != null, required = planned != null && planned.Release.Required,
                         version = planned == null ? "" : planned.Release.Version.ToString() };
-                case "qa.update.exit":
-                    if (!lab) break;
-                    UpdateRequested = await updates.OnExit();
-                    BeginInvoke(new Action(async () => await Quit()));
-                    return null;
                 case "qa.report":
                     if (!lab) break;
                     WriteLabResult(args);
+                    return null;
+                case "qa.resize":
+                    if (!lab) break;
+                    ClientSize = Json.Bool(args, "small") ? new Size(870, 580) : new Size(1180, 750);
                     return null;
                 case "qa.capture":
                     if (!lab) break;
@@ -399,7 +439,7 @@ namespace SquadVoice {
                     if (name != "login.png" && name != "voice-room.png" && name != "audio-settings.png" &&
                         name != "accompaniment.png" && name != "account-settings.png" && name != "account-settings-failed.png" &&
                         name != "voice-preview.png" && name != "chat.png" && name != "cache-settings.png" && name != "cache-shortcut.png" && name != "image-preview.png" &&
-                        name != "member-actions.png" && name != "split-layout.png" && name != "update.png") break;
+                        name != "member-actions.png" && name != "workspace-layout.png" && name != "direct-message.png" && name != "update.png") break;
                     using (var stream = File.Create(Path.Combine(store.DirectoryPath, name))) await view.CoreWebView2.CapturePreviewAsync(CoreWebView2CapturePreviewImageFormat.Png, stream);
                     return null;
 #endif
@@ -432,7 +472,7 @@ namespace SquadVoice {
                 }
             }
             return new {
-                configured = current.endpoint != null, profileError = store.ReadError, version = AppVersion,
+                configured = current.endpoint != null, profileError = store.ReadError, version = ReleaseBuild.DisplayVersion,
                 devices = AudioDefaults.Read(), preferences = preferences, accompanimentSupported = ProcessCapture.Supported,
                 account = account, remembered = account == null && !api.SignedIn ? ForLoginForm(current) : null, loginError = loginError
             };
@@ -483,12 +523,49 @@ namespace SquadVoice {
         }
 
         private static object ReadChannel(Dictionary<string, object> args) {
-            return new {
-                id = Json.Text(args, "id", 48),
-                name = Json.Text(args, "name", 64),
-                description = Json.Text(args, "description", 180),
-                capacity = ChatCache.Number(Json.Value(args, "capacity"))
+            var value = new Dictionary<string, object> {
+                { "id", Json.Text(args, "id", 48) },
+                { "name", Json.Text(args, "name", 64) },
+                { "description", Json.Text(args, "description", 180) },
+                { "capacity", ChatCache.Number(Json.Value(args, "capacity")) }
             };
+            var group = Json.Text(args, "groupId", 48);
+            if (group.Length != 0) value.Add("groupId", group);
+            return value;
+        }
+
+        private static object ReadGroup(Dictionary<string, object> args) {
+            return new { id = Json.Text(args, "id", 48), name = Json.Text(args, "name", 64) };
+        }
+
+        private async Task<bool> SaveChatImage(Dictionary<string, object> args) {
+            var bytes = await chat.ImageBytes(args);
+            string extension, filter;
+            if (bytes.Length >= 8 && bytes[0] == 137 && Encoding.ASCII.GetString(bytes, 1, 3) == "PNG") {
+                extension = "png"; filter = "PNG 图片";
+            } else if (bytes.Length >= 3 && bytes[0] == 255 && bytes[1] == 216 && bytes[2] == 255) {
+                extension = "jpg"; filter = "JPEG 图片";
+            } else if (bytes.Length >= 6 && Encoding.ASCII.GetString(bytes, 0, 3) == "GIF") {
+                extension = "gif"; filter = "GIF 图片";
+            } else if (bytes.Length >= 12 && Encoding.ASCII.GetString(bytes, 0, 4) == "RIFF" &&
+                       Encoding.ASCII.GetString(bytes, 8, 4) == "WEBP") {
+                extension = "webp"; filter = "WebP 图片";
+            } else throw new FriendlyError("图片格式无法识别。");
+            string destination;
+#if QA
+            if (lab) destination = Path.Combine(store.DirectoryPath, "downloaded-chat-image." + extension);
+            else
+#endif
+            using (var dialog = new SaveFileDialog { DefaultExt = extension, AddExtension = true, OverwritePrompt = true,
+                Title = "保存聊天图片", Filter = filter + "|*." + extension,
+                FileName = "SquadVoice-" + ChatCache.Number(Json.Value(args, "id")) + "." + extension }) {
+                if (dialog.ShowDialog(this) != DialogResult.OK) return false;
+                destination = dialog.FileName;
+            }
+            try { await Task.Run(() => ProfileStore.WriteAtomic(destination, bytes)); }
+            catch (IOException) { throw new FriendlyError("无法保存图片，请选择其他位置。"); }
+            catch (UnauthorizedAccessException) { throw new FriendlyError("无法写入所选位置。"); }
+            return true;
         }
 
         private async Task<object> StartCapture(int pid) {
@@ -563,5 +640,6 @@ namespace SquadVoice {
         [DllImport("user32.dll")] private static extern bool UnregisterHotKey(IntPtr window, int id);
         [DllImport("user32.dll")] private static extern short GetAsyncKeyState(int key);
         [DllImport("dwmapi.dll")] private static extern int DwmSetWindowAttribute(IntPtr window, int attr, ref int value, int size);
+        [DllImport("user32.dll")] private static extern bool RedrawWindow(IntPtr window, IntPtr area, IntPtr region, uint flags);
     }
 }

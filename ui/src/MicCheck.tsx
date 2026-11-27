@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { message, subscribe } from './native';
 import type { Preferences } from './native';
-import { microphoneOptions } from './voice';
+import { MicrophoneNoiseProcessor, microphoneOptions } from './microphone';
 import type { VoiceEngine } from './voice';
 
 const sampleMs = 4000;
@@ -69,15 +69,31 @@ export function MicCheck({ engine, preferences }: { engine: VoiceEngine; prefere
   async function startRecording(signal: AbortSignal) {
     setSample(null);
     setPeak(floor);
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: microphoneOptions(preferences) });
+    let stream: MediaStream | undefined;
+    let processor: MicrophoneNoiseProcessor | undefined;
     let context: AudioContext | null = null;
     let frame = 0;
     try {
+      if (preferences.noiseSuppression) {
+        stream = await navigator.mediaDevices.getUserMedia({ audio: microphoneOptions(preferences, false) });
+        if (signal.aborted) return;
+        const candidate = new MicrophoneNoiseProcessor();
+        try {
+          await candidate.init({ track: stream.getAudioTracks()[0] });
+          processor = candidate;
+        } catch {
+          stream.getTracks().forEach(track => track.stop());
+          stream = undefined;
+        }
+      }
       if (signal.aborted) return;
+      stream ??= await navigator.mediaDevices.getUserMedia({ audio: microphoneOptions(preferences) });
+      if (signal.aborted) return;
+      const sampleStream = processor?.processedTrack ? new MediaStream([processor.processedTrack]) : stream;
       context = new AudioContext();
       const analyser = context.createAnalyser();
       analyser.fftSize = 1024;
-      context.createMediaStreamSource(stream).connect(analyser);
+      context.createMediaStreamSource(sampleStream).connect(analyser);
       await context.resume();
       if (signal.aborted) return;
       const samples = new Float32Array(analyser.fftSize);
@@ -102,14 +118,15 @@ export function MicCheck({ engine, preferences }: { engine: VoiceEngine; prefere
       };
       setPhase('recording');
       frame = window.requestAnimationFrame(meter);
-      const recorded = await recordSample(stream, signal);
+      const recorded = await recordSample(sampleStream, signal);
       if (signal.aborted) return;
       if (!recorded.size) throw new Error('没有录到可播放的声音，请检查所选麦克风。');
       setSample(recorded);
       setFeedback(max <= -55 ? '输入电平很低，请检查麦克风是否静音。' : max >= -1 ? '输入接近满幅，可降低 Windows 麦克风音量。' : '录音完成，可以试听。');
     } finally {
       window.cancelAnimationFrame(frame);
-      stream.getTracks().forEach(track => track.stop());
+      stream?.getTracks().forEach(track => track.stop());
+      await processor?.destroy();
       if (context) await context.close().catch(() => {});
       setLevel(floor);
     }

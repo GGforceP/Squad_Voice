@@ -49,12 +49,14 @@ POST /api/v1/voice/join，带会话令牌；请求 JSON 包含 channelId。由�
 
 ## 频道状态和聊天
 
-- `POST /api/v1/workspace` 返回频道列表、管理员标识和 LiveKit 实际入房的成员状态。登录即可查看人数、显示名、麦克风和伴奏状态。
-- `POST /api/v1/channel/{create,update,delete}` 供管理员创建、编辑或删除语音频道，频道容量为 1–5 人。
+- `POST /api/v1/workspace` 返回 `groups`、子频道列表、成员目录 `people` 和 LiveKit 实际入房的成员状态。频道的 `groupId` 指向母频道。旧配置中的语音频道沿用原 ID 并归入默认母频道。
+- `POST /api/v1/group/{create,update,delete}` 供总管理和递归管理维护母频道。删除母频道时同时移除其中的子频道和聊天。
+- `POST /api/v1/channel/{create,update,delete}` 维护子频道，容量为 1–5 人。创建时提供 `groupId`，旧客户端可省略。频道管理员可以在获授权的母频道内创建子频道，并编辑或删除其管理范围内的子频道。
 - `POST /api/v1/chat/history` 使用 `channelId`、`limit` 和可选的 `before` 或 `after` 消息 ID 分页。`known` 是客户端已保存的页面校验值，相同时服务端返回 `unchanged`。
 - `POST /api/v1/chat/send` 接收消息文字和客户端 `nonce`。`POST /api/v1/chat/upload?channel=<id>` 接收 multipart `nonce`、可选 `text` 和 `image`。`POST /api/v1/chat/image` 按 `channelId` 和 `id` 获取图片。客户端有缓存时可传 `known: "cached"`，服务端确认图片仍有效后返回 204。
-- `POST /api/v1/chat/delete` 按 `channelId` 和 `id` 删除消息，要求管理员权限。上述聊天和图片操作均由服务端校验该会话当前在对应语音频道内，未入房返回 `join_voice_for_chat`。
-- `POST /api/v1/chat/watch` 用 `epoch` 和 `cursor` 长轮询变化。消息通知只随当前语音频道发送，缓存失效事件在登录后可同步。事件过旧或数据世代变更时返回 `reset`，客户端清除聊天缓存后重新按需加载。
+- 频道聊天与图片按当前语音入房校验，未入房返回 `join_voice_for_chat`。`POST /api/v1/chat/delete` 按 `channelId` 和 `id` 删除频道消息，要求该频道的管理员权限。
+- 成员目录中的 `conversationId` 可用于双方私信的 `channelId` 或上传接口的 `channel`。服务端检查登录账号属于这对会话参与者，并校验对方账号状态。
+- `POST /api/v1/chat/watch` 用 `epoch` 和 `cursor` 长轮询变化。频道消息通知随当前语音频道发送。私信的消息和缓存事件只送达会话双方。事件过旧或数据世代变更时返回 `reset`，客户端清除聊天缓存后重新按需加载。
 
 `workspace` 中的 `role` 和成员 `role` 使用 `owner`、`recursive`、`channel`、`member`。`managedChannels` 列出此账号有权管理的频道。语音成员的 `rules` 可带 `listenUntil`、`micUntil`、`chatUntil`。它们是允许自助解除的 Unix 毫秒时间戳，存在时一直限制，直至有人解除。
 

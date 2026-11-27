@@ -246,7 +246,7 @@ func TestDesktopBroker(t *testing.T) {
 		defer s.updates.root.Close()
 	}
 	if config.ChatFixtures {
-		for i := 1; i <= 14; i++ {
+		for i := 1; i <= 24; i++ {
 			if _, err := s.chat.append(chatMessage{Channel: "voice-lobby", Author: "历史样本", AuthorID: "qa-history",
 				Nonce: randomToken(18), Text: fmt.Sprintf("历史消息 %02d", i), Time: time.Now().UTC()}, nil); err != nil {
 				t.Fatal(err)

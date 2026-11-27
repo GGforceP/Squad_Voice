@@ -92,16 +92,18 @@ namespace SquadVoice {
         private readonly string path;
         public UpdateLaunch(ReleaseInfo release, string path) { Release = release; this.path = path; }
 
-        public void Start(string installation) {
+        public void Start(string installation, bool restart) {
             if (!Release.Matches(path)) throw new FriendlyError("更新包未通过最终完整性校验。");
             Process.Start(new ProcessStartInfo {
-                FileName = path, Arguments = "/S /UPDATE /WAITPID=" + Process.GetCurrentProcess().Id + " /D=" + installation, WorkingDirectory = installation,
+                FileName = path, Arguments = "/S /UPDATE" + (restart ? " /RELAUNCH" : "") +
+                    " /WAITPID=" + Process.GetCurrentProcess().Id + " /D=" + installation, WorkingDirectory = installation,
                 UseShellExecute = false, CreateNoWindow = true
             });
         }
     }
 
     internal sealed class ClientUpdater {
+        private enum Choice { None, Now, Later }
         private readonly ApiClient api;
         private readonly Version installed;
         private readonly string directory;
@@ -111,7 +113,9 @@ namespace SquadVoice {
         private string status = "none";
         private Task checking;
         private Task<UpdateLaunch> downloading;
-        private bool accepted;
+        private Choice choice;
+        public bool Required { get { return available != null && available.Required; } }
+        public bool RestartOnInstall { get { return choice == Choice.Now; } }
 
         public ClientUpdater(ApiClient api, string installed, string dataDirectory, Action<string, object> notify) {
             this.api = api;
@@ -120,7 +124,10 @@ namespace SquadVoice {
             directory = Path.Combine(dataDirectory, "Updates");
         }
 
-        private object Notice() { return new { status = status, version = available == null ? "" : available.Version.ToString(), required = available != null && available.Required }; }
+        private object Notice() {
+            return new { status = status, version = available == null ? "" : available.Version.ToString(),
+                required = Required, choice = choice.ToString().ToLowerInvariant() };
+        }
         private void Changed(string next) { status = next; notify("update.state", Notice()); }
 
         public async Task<object> Check(bool interactive) {
@@ -152,7 +159,7 @@ namespace SquadVoice {
                     return;
                 }
                 downloading = null;
-                accepted = false;
+                choice = Choice.None;
                 available = release;
                 Changed("available");
                 if (release.Required) Begin();
@@ -163,9 +170,27 @@ namespace SquadVoice {
             }
         }
 
-        public object Accept() {
-            if (available != null) { accepted = true; Begin(); }
+        public object InstallLater() {
+            if (available != null && choice != Choice.Now) {
+                choice = Choice.Later;
+                Begin();
+            }
             return Notice();
+        }
+
+        public async Task<UpdateLaunch> InstallNow() {
+            if (available == null || choice == Choice.Now) return null;
+            var release = available;
+            var previous = choice;
+            choice = Choice.Now;
+            Changed(status);
+            Begin();
+            var launch = await downloading;
+            if (launch == null && available == release) {
+                choice = previous;
+                Changed(status);
+            }
+            return launch;
         }
 
         private void Begin() {
@@ -201,9 +226,10 @@ namespace SquadVoice {
             }
         }
 
-        public async Task<UpdateLaunch> OnExit() {
-            if (available == null || (!accepted && !available.Required) || downloading == null) return null;
-            return await downloading;
+        public Task<UpdateLaunch> OnExit() {
+            if (available == null || (choice == Choice.None && !Required)) return Task.FromResult<UpdateLaunch>(null);
+            Begin();
+            return downloading;
         }
 
         public void Reset() {
@@ -211,7 +237,7 @@ namespace SquadVoice {
             cancellation.Dispose();
             cancellation = new CancellationTokenSource();
             available = null;
-            accepted = false;
+            choice = Choice.None;
             checking = null;
             downloading = null;
             Changed("none");

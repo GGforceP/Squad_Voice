@@ -56,6 +56,8 @@ docker compose exec backend /squadvoice admin channel set voice-lobby '语音频
 
 `admin account admin|member USER` 管理全局递归权限。`account enable|disable|delete USER` 管理账号状态。已加入频道的管理员可以在客户端对成员应用收听、麦克风或消息限制。成员等满 60 秒可以自行解除，管理者可以提前解除。频道管理权限只在被授予的频道生效。
 
+0.6.0 使用大频道和子频道。已有子频道登录后会显示在默认大频道中，频道 ID 和聊天记录随服务端数据卷保留。上线升级前备份 `accounts` 卷。回退到旧服务端镜像时，通过该备份恢复与旧版对应的状态和媒体数据。
+
 账号、频道与聊天在 `accounts` 卷。容器 `/data/mediacache` 保存聊天数据库与图片。`cachesize` 以 MiB 设置图片占用上限，默认 10240。达到配额时先清理最早的图片，保留对应文字和消息记录。备份或迁移时应保留使用中的数据卷和运行配置。
 
 ## 签名在线更新

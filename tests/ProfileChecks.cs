@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Security.Cryptography;
 using System.Text;
@@ -29,6 +30,13 @@ namespace SquadVoice {
             var prefs = settings.LoadPreferences(new Preferences());
             Require(prefs.pushToTalk && prefs.hotkey == "F9" && prefs.microphoneId == "selected-input" &&
                 !prefs.echoCancellation && !prefs.noiseSuppression && !prefs.autoGainControl && prefs.voiceBitrate == 40000, "audio settings roundtrip");
+            Require(new Preferences().voiceBitrate == 64000, "default microphone bitrate");
+            foreach (int rate in new[] { 16000, 24000, 40000, 48000, 64000, 80000, 96000 }) {
+                var options = new Dictionary<string, object> { { "voiceBitrate", rate } };
+                Require(Preferences.Parse(options).voiceBitrate == rate, "microphone bitrate " + rate);
+            }
+            Require(Preferences.Parse(new Dictionary<string, object> { { "voiceBitrate", 96001 } }).voiceBitrate == 64000,
+                "invalid microphone bitrate");
             var prefsText = File.ReadAllText(Path.Combine(publicDirectory, "preferences.json"));
             Require(!prefsText.Contains(endpoint) && !prefsText.Contains(profile.remembered.password) &&
                 !prefsText.Contains(profile.remembered.username), "sensitive fields in Windows Documents");

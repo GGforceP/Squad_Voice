@@ -1,24 +1,24 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { CSSProperties, FormEvent, MouseEvent, ReactNode } from 'react';
+import type { FormEvent, MouseEvent, ReactNode } from 'react';
 import {
-  ArrowRight, AudioLines, Check, ChevronDown, ChevronRight, CircleHelp, Download, Headphones, HeadphoneOff, KeyRound,
-  LoaderCircle, LockKeyhole, LogOut, Mic, MicOff, MonitorSpeaker, Music2, PhoneOff, Plus, RefreshCw, Settings,
+  ArrowRight, AudioLines, Check, ChevronRight, CircleHelp, Download, Ellipsis, Hash, Headphones, HeadphoneOff, KeyRound, Layers,
+  LoaderCircle, LockKeyhole, LogOut, MessageCircle, Mic, MicOff, MonitorSpeaker, Music2, PhoneOff, Plus, RefreshCw, Settings,
   ShieldCheck, SlidersHorizontal, UserRound, Users, Volume2, Wifi, X,
 } from 'lucide-react';
 import { call, initialPreferences, isDesktop, message, NativeError, subscribe } from './native';
-import type { Account, Bootstrap, Channel, Defaults, Identity, MemberAction, MemberRole, Preferences, RememberedLogin, RoomRules, UpdateState, Workspace } from './native';
+import type { Account, Bootstrap, Channel, ChannelGroup, Defaults, DirectoryMember, Identity, MemberAction, MemberRole, Preferences, RememberedLogin, RoomRules, UpdateState, Workspace } from './native';
 import { VoiceEngine } from './voice';
 import { MicCheck } from './MicCheck';
 import { ChatPanel } from './ChatPanel';
 import { CacheSettings, CacheUsageButton } from './CacheSettings';
-import { canModerate, ChannelSplit, MemberMenu, RoleBadge, RoomRestrictions } from './ChannelControls';
+import { Avatar, canModerate, MemberMenu, RoleBadge, RoomRestrictions } from './ChannelControls';
 import type { AudioApp, Member, VoiceState } from './voice';
 
-const nativeBlank: Bootstrap = { configured: false, profileError: false, version: '0.5.1', devices: { microphone: null, speaker: null }, preferences: initialPreferences, accompanimentSupported: false };
+const nativeBlank: Bootstrap = { configured: false, profileError: false, version: '', devices: { microphone: null, speaker: null }, preferences: initialPreferences, accompanimentSupported: false };
 const noRules: RoomRules = {};
-const noUpdate: UpdateState = { status: 'none', version: '', required: false };
-const colors = ['violet', 'sky', 'amber', 'sage', 'rose'];
-const initials = (value: string) => [...value.trim()].slice(0, value.charCodeAt(0) > 127 ? 1 : 2).join('').toUpperCase() || '队';
+const noUpdate: UpdateState = { status: 'none', version: '', required: false, choice: 'none' };
+const defaultGroupId = 'default';
+const groupOf = (channel: Channel) => channel.groupId || defaultGroupId;
 const clock = (seconds: number) => String(Math.floor(seconds / 60)).padStart(2, '0') + ':' + String(seconds % 60).padStart(2, '0');
 const qualityLabel: Record<string, string> = { excellent: '连接良好', good: '连接正常', poor: '连接不稳', lost: '连接中断', unknown: '正在检测' };
 
@@ -29,9 +29,6 @@ function IconButton({ label, children, onClick, disabled, className = '', test, 
 }
 function Logo({ small = false }: { small?: boolean }) {
   return <span className={'logo ' + (small ? 'logo-small' : '')} aria-hidden="true"><AudioLines strokeWidth={2.35} /></span>;
-}
-function Avatar({ name, index = 0, speaking = false, className = '' }: { name: string; index?: number; speaking?: boolean; className?: string }) {
-  return <span className={'avatar ' + colors[index % colors.length] + (speaking ? ' is-speaking' : '') + ' ' + className} aria-hidden="true">{initials(name)}</span>;
 }
 function Modal({ label, subtitle, icon, children, close }: { label: string; subtitle?: string; icon: ReactNode; children: ReactNode; close: () => void }) {
   const ref = useRef<HTMLDialogElement>(null);
@@ -44,6 +41,27 @@ function Modal({ label, subtitle, icon, children, close }: { label: string; subt
   </dialog>;
 }
 
+function updateMessage({ status, version, choice }: UpdateState) {
+  switch (status) {
+    case 'available': return '有新版本 ' + version;
+    case 'downloading': return choice === 'now' ? '正在下载 ' + version + '，完成后自动安装' : '正在后台下载 ' + version;
+    case 'ready': return choice === 'now' ? '正在退出客户端并安装更新' : '更新已下载，退出时自动安装';
+    case 'error': return '暂时无法完成更新，请重试';
+    case 'disabled': return '当前连接未配置签名更新';
+    case 'current': return '当前没有可下载的新版本';
+    default: return '正在检查更新…';
+  }
+}
+
+function UpdateButtons({ state, now, later, dialog = false }: { state: UpdateState; now: () => void; later: () => void; dialog?: boolean }) {
+  if (!state.version || state.choice === 'now') return null;
+  return <>
+    <button className={dialog ? 'button primary' : 'link-button'} type="button" data-testid={dialog ? 'dialog-update-now' : 'update-now'} onClick={now}>立即更新</button>
+    {(state.choice !== 'later' || state.status === 'error') &&
+      <button className={dialog ? 'button soft' : 'link-button'} type="button" data-testid={dialog ? 'dialog-update-later' : 'update-later'} onClick={later}>稍后更新</button>}
+  </>;
+}
+
 export function App() {
   const [engine] = useState(() => new VoiceEngine());
   const [voice, setVoice] = useState<VoiceState>(engine.state);
@@ -51,6 +69,9 @@ export function App() {
   const [ready, setReady] = useState(!isDesktop);
   const [account, setAccount] = useState<Account | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [groupId, setGroupId] = useState<string | null>(null);
+  const [direct, setDirect] = useState(false);
+  const [peerId, setPeerId] = useState<string | null>(null);
   const [loginName, setLoginName] = useState('');
   const [password, setPassword] = useState('');
   const [rememberLogin, setRememberLogin] = useState(true);
@@ -62,6 +83,7 @@ export function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [cacheOpen, setCacheOpen] = useState(false);
   const [editing, setEditing] = useState<Channel | 'new' | null>(null);
+  const [editingGroup, setEditingGroup] = useState<ChannelGroup | 'new' | null>(null);
   const [workspace, setWorkspace] = useState<Workspace | null>(null);
   const [chatReady, setChatReady] = useState(false);
   const [chatError, setChatError] = useState('');
@@ -69,10 +91,8 @@ export function App() {
   const [roster, setRoster] = useState(true);
   const [memberMenu, setMemberMenu] = useState<{ id: string; x: number; y: number } | null>(null);
   const dismissMemberMenu = useCallback(() => setMemberMenu(null), []);
-  const [draggedSplit, setDraggedSplit] = useState<number | null>(null);
   const [updateInfo, setUpdateInfo] = useState<UpdateState>(noUpdate);
   const [updatesOpen, setUpdatesOpen] = useState(false);
-  const [skippedUpdate, setSkippedUpdate] = useState('');
   const [volumeFor, setVolumeFor] = useState<string | null>(null);
   const [now, setNow] = useState(Date.now());
   const [showHelp, setShowHelp] = useState(false);
@@ -136,7 +156,6 @@ export function App() {
 
   useEffect(() => {
     if (!workspace) return;
-    setSelectedId(id => workspace.channels.some(channel => channel.id === id) ? id : workspace.channels[0]?.id ?? null);
     const current = engine.state.channelId;
     if (current && !workspace.channels.some(channel => channel.id === current)) void engine.leave();
   }, [workspace, engine]);
@@ -217,7 +236,7 @@ export function App() {
   async function logout(notice = '') {
     if (leaving) return;
     setLeaving(true);
-    setAccountOpen(false); setSettingsOpen(false); setMusicOpen(false); setVolumeFor(null); setCacheOpen(false); setEditing(null);
+    setAccountOpen(false); setSettingsOpen(false); setMusicOpen(false); setVolumeFor(null); setCacheOpen(false); setEditing(null); setEditingGroup(null);
     setUpdatesOpen(false); setUpdateInfo(noUpdate); dismissMemberMenu();
     await engine.leave();
     let remembered: RememberedLogin | null = null;
@@ -225,6 +244,7 @@ export function App() {
     try { remembered = await call<RememberedLogin | null>('account.logout'); }
     catch (failure) { error = message(failure, '退出完成，但无法更新本地登录设置。'); }
     setAccount(null); setLoginError(error); setLoginNotice(notice); setSelectedId(null);
+    setGroupId(null); setDirect(false); setPeerId(null);
     setWorkspace(null); setChatReady(false); setChatError('');
     setLoginName(remembered?.username ?? loginName);
     setPassword(remembered?.password ?? '');
@@ -239,30 +259,52 @@ export function App() {
   const workspaceName = workspace?.name ?? account?.workspace.name ?? 'Squad Voice';
   const admin = workspace?.admin ?? account?.user.admin ?? false;
   const globalRole: MemberRole = workspace?.role || account?.user.role || (admin ? 'recursive' : 'member');
-  const selected = channels.find(c => c.id === selectedId);
+  const supportsGroups = Array.isArray(workspace?.groups);
+  const groups = workspace?.groups ?? [{ id: defaultGroupId, name: workspaceName }];
+  const rememberedChannel = channels.find(channel => channel.id === selectedId);
+  const selectedGroup = groups.find(group => group.id === groupId)
+    ?? groups.find(group => rememberedChannel && group.id === groupOf(rememberedChannel)) ?? groups[0];
+  const children = channels.filter(channel => groupOf(channel) === selectedGroup?.id);
+  const selected = children.find(channel => channel.id === selectedId) ?? children[0];
+  const canCreateChild = Boolean(selectedGroup && (admin || supportsGroups && children.some(channel => workspace?.managedChannels?.includes(channel.id))));
+  const directory = workspace?.people ?? [];
+  const contacts = directory.filter(person => person.id !== accountId && person.conversationId);
+  const peer = contacts.find(person => person.id === peerId) ?? contacts[0];
   const joined = channels.find(c => c.id === voice.channelId);
   const live = voice.status === 'connected' || voice.status === 'reconnecting';
-  const inSelected = Boolean(selected && selected.id === joined?.id && live);
+  const inSelected = Boolean(!direct && selected && selected.id === joined?.id && live);
   const chatOpen = Boolean(selected && inSelected && voice.status === 'connected');
   const channelManageable = (id: string) => admin || Boolean(workspace?.managedChannels?.includes(id));
   const selectedRole = selected && globalRole === 'member' && channelManageable(selected.id) ? 'channel' : globalRole;
+  const directoryRole = (member: DirectoryMember): MemberRole => member.role === 'member' && !direct && selected &&
+    member.managedChannels?.includes(selected.id) ? 'channel' : member.role;
+  const roleFor = (id: string) => {
+    if (id === accountId) return direct ? globalRole : selectedRole;
+    const member = directory.find(person => person.id === id);
+    return member ? directoryRole(member) : undefined;
+  };
   const members = (channelId: string): Member[] => {
     const presence = workspace?.presence[channelId] ?? [];
     if (channelId === voice.channelId && live) return voice.members.map(member => {
       const matching = presence.find(row => row.id === member.id);
-      return { ...member, name: matching?.name ?? member.name, role: matching?.role ?? (member.self ? selectedRole : undefined), rules: matching?.rules };
+      const person = directory.find(row => member.id === row.id || member.id.startsWith(row.id + '_'));
+      return { ...member, userId: matching?.userId ?? (member.self ? accountId : person?.id), name: matching?.name ?? member.name,
+        role: matching?.role ?? (member.self ? selectedRole : person && directoryRole(person)), rules: matching?.rules };
     });
-    return presence.map(member => ({ ...member, self: false, speaking: false, quality: 'unknown', volume: 100 }));
+    return presence.map(member => ({ ...member, self: member.userId === accountId, speaking: false, quality: 'unknown', volume: 100 }));
   };
-  const selectedMembers = selected ? members(selected.id) : [];
+  const selectedMembers = selected && !direct ? members(selected.id) : [];
+  const rosterDirectory = direct
+    ? directory.filter(person => person.id === accountId || person.id === peer?.id)
+    : selected ? directory.filter(person => person.managedChannels?.includes(selected.id) &&
+      !selectedMembers.some(member => member.userId === person.id)) : [];
   const presenceUnavailable = Boolean(selected && workspace?.presenceUnavailable.includes(selected.id) && !inSelected);
   const duration = voice.since ? clock(Math.max(0, Math.floor((now - voice.since) / 1000))) : '00:00';
-  const hasMusic = selectedMembers.some(m => m.music);
+  const hasMusic = voice.members.some(m => m.music);
   const volumeMember = voice.members.find(m => m.id === volumeFor);
   const modalMember = selectedMembers.find(m => m.id === memberMenu?.id);
   const ownVoiceId = voice.members.find(m => m.self)?.id;
   const ownRules = voice.channelId ? workspace?.presence[voice.channelId]?.find(m => m.id === ownVoiceId)?.rules : undefined;
-  const split = draggedSplit ?? boot.preferences.voiceShare;
 
   useEffect(() => { if (ownRules) engine.applyRoomRules(ownRules); }, [engine, ownRules]);
   useEffect(() => { if (!chatOpen || !roster) dismissMemberMenu(); }, [chatOpen, roster, dismissMemberMenu]);
@@ -273,22 +315,23 @@ export function App() {
     const rect = event.currentTarget.getBoundingClientRect();
     setMemberMenu({ id: member.id, x: event.clientX || rect.left, y: event.clientY || rect.bottom });
   }
-  async function controlMember(action: MemberAction, enabled: boolean, targetId = '') {
-    if (!selected || !chatOpen || engine.state.channelId !== selected.id || engine.state.status !== 'connected')
+  async function controlMember(action: MemberAction, enabled: boolean, targetId = '', roomId = selected?.id) {
+    if (!roomId || engine.state.channelId !== roomId || engine.state.status !== 'connected')
       throw new Error('加入该语音频道后才能管理成员。');
-    const changed = await call<{ role: MemberRole; rules: RoomRules }>('member.control', { channelId: selected.id, targetId, action, enabled });
+    const changed = await call<{ role: MemberRole; rules: RoomRules }>('member.control', { channelId: roomId, targetId, action, enabled });
     if (!targetId) engine.applyRoomRules(changed.rules);
     setWorkspace(await call<Workspace>('workspace.state'));
-  }
-  function saveSplit(value: number) {
-    setBoot(current => ({ ...current, preferences: { ...current.preferences, voiceShare: value } }));
-    setDraggedSplit(null);
-    void call('layout.split', { value }).catch(failure => engine.notice(message(failure, '无法保存区域高度。')));
   }
   function checkForUpdate() {
     setSettingsOpen(false);
     setUpdatesOpen(true);
     void call<UpdateState>('update.check', { interactive: true }).then(setUpdateInfo).catch(() => setUpdateInfo({ ...noUpdate, status: 'error' }));
+  }
+  function updateNow() {
+    void call('update.now').catch(failure => engine.notice(message(failure, '无法开始更新。')));
+  }
+  function updateLater() {
+    void call<UpdateState>('update.later').then(setUpdateInfo).catch(failure => engine.notice(message(failure, '无法安排后台更新。')));
   }
 
   async function listApps() {
@@ -304,7 +347,20 @@ export function App() {
     setMusicOpen(true);
     if (boot.accompanimentSupported) void listApps();
   }
-  function selectChannel(channel: Channel) { setSelectedId(channel.id); setVolumeFor(null); engine.notice(''); }
+  function selectChannel(channel: Channel) {
+    setDirect(false); setGroupId(groupOf(channel)); setSelectedId(channel.id);
+    setVolumeFor(null); dismissMemberMenu(); engine.notice('');
+  }
+  function selectGroup(group: ChannelGroup) {
+    setDirect(false); setGroupId(group.id);
+    if (group.id !== selectedGroup?.id) setSelectedId(channels.find(channel => groupOf(channel) === group.id)?.id ?? null);
+    setVolumeFor(null); dismissMemberMenu(); engine.notice('');
+  }
+  function selectDirect(id?: string) {
+    setDirect(true);
+    if (id) setPeerId(id);
+    setVolumeFor(null); dismissMemberMenu();
+  }
 
   if (!ready) return <main className="startup-shell" data-testid="startup">
     <Logo /><span>Squad Voice</span><LoaderCircle className="spin" aria-label="正在连接" />
@@ -339,7 +395,7 @@ export function App() {
           <button className="link-button" onClick={() => setProfileOpen(true)} disabled={loginBusy} data-testid="profile-open"><Settings /> 接入配置</button></div>
       </section>
     </div>
-    <div className="login-bottom"><span>仅限受邀成员</span><span>Windows · v{boot.version}</span></div>
+    <div className="login-bottom"><span>仅限受邀成员</span><span>Windows{boot.version && ` · v${boot.version}`}</span></div>
     {profileOpen && <ProfileDialog configured={boot.configured} close={() => setProfileOpen(false)} onSaved={changed => {
       setBoot(b => ({ ...b, configured: true, profileError: false }));
       if (changed) { setLoginName(''); setPassword(''); }
@@ -347,131 +403,160 @@ export function App() {
     }} />}
   </main>;
 
-  return <main className={'desktop ' + (!roster ? 'roster-closed' : '')} data-testid="workspace">
-    <aside className="rail" aria-label="小队">
-      <span className="rail-active" /><div className="rail-logo" title={workspaceName}><Logo /></div>
+  return <main className={'desktop workspace-v6 ' + (!roster ? 'roster-closed' : '')} data-testid="workspace">
+    <div className="workspace-caption" aria-label="当前会话" data-testid="workspace-caption">
+      {direct && peer ? <Avatar name={peer.name} /> : direct ? <MessageCircle size={13} /> : <Layers size={13} />}
+      <strong>{direct ? '私信' : selectedGroup?.name ?? workspaceName}</strong>
+      {(direct ? peer?.name : selected?.name) && <><ChevronRight size={12} /><span>{direct ? peer?.name : selected?.name}</span></>}
+    </div>
+    <aside className="rail" aria-label="大频道与私信">
+      <button type="button" className={'workspace-home ' + (direct ? 'selected' : '')} aria-label="Squad Voice 私信"
+        title="Squad Voice · 私信" aria-pressed={direct} data-testid="dm-home" onClick={() => selectDirect()}><Logo small /></button>
       <div className="rail-divider" />
-      {admin ? <IconButton className="rail-lock" label="创建语音频道" onClick={() => setEditing('new')}><Plus size={19} /></IconButton> :
-        <span className="rail-lock" title="私有小队"><LockKeyhole size={17} /></span>}
+      <nav className="group-list" aria-label="大频道">
+        {groups.map((group, index) => <button key={group.id} type="button" data-testid={'group-' + group.id} aria-label={group.name} title={group.name}
+          aria-pressed={!direct && group.id === selectedGroup?.id} className={'group-button ' + (!direct && group.id === selectedGroup?.id ? 'selected' : '')}
+          onClick={() => selectGroup(group)} onContextMenu={event => {
+            if (supportsGroups && admin) { event.preventDefault(); setEditingGroup(group); }
+          }}><Avatar name={group.name} index={index} /></button>)}
+      </nav>
+      {supportsGroups && admin && <IconButton className="rail-lock" label="新建大频道" test="group-create" onClick={() => setEditingGroup('new')}><Plus size={19} /></IconButton>}
       <div className="rail-spacer" />
       <CacheUsageButton open={cacheOpen} onOpen={() => setCacheOpen(true)} />
       <IconButton label="使用说明" onClick={() => setShowHelp(true)}><CircleHelp /></IconButton>
-      <IconButton label="音频设置" test="settings-open-rail" onClick={() => setSettingsOpen(true)}><Settings /></IconButton>
     </aside>
-    <aside className="channels" aria-label="频道">
-      <div className="workspace-heading"><span>{workspaceName}</span>{admin ? <ShieldCheck size={16} aria-label="管理员" /> : <LockKeyhole size={15} />}</div>
-      <div className="channel-scroll">
-        <div className="small-label"><ChevronDown /> 语音频道
-          {admin && <IconButton className="channel-action" label="新增语音频道" test="channel-create" onClick={() => setEditing('new')}><Plus /></IconButton>}
-        </div>
-        {channels.length === 0 && <p className="channel-empty">还没有语音频道。</p>}
-        {channels.map(channel => (
-            <div className="channel-row" key={channel.id}>
-              <button data-testid={'channel-' + channel.id} className={'channel ' + (channel.id === selectedId ? 'selected' : '')} onClick={() => selectChannel(channel)}>
-                <Volume2 size={19} /><span>{channel.name}</span><span className="channel-count">{members(channel.id).length}</span>
-              </button>
-              {channelManageable(channel.id) && <IconButton className="channel-action" label={'编辑 ' + channel.name} test={'channel-edit-' + channel.id} onClick={() => setEditing(channel)}><Settings /></IconButton>}
-            </div>
-        ))}
-      </div>
-      {live && <div className="voice-connection"><div><strong><Wifi /> {voice.status === 'reconnecting' ? '正在重连' : '语音已连接'}</strong><span>{joined?.name} · {duration}</span></div><IconButton label="断开语音" className="hangup" onClick={() => void engine.leave()} test="leave-rail"><PhoneOff /></IconButton></div>}
-    </aside>
-    <section className="room">
-      <header className="room-top"><Volume2 className="header-icon" /><div className="header-label"><strong>{selected?.name ?? '语音频道'}</strong><span>{selected?.description || '小队语音'}</span></div>
-        <span className="top-spacer" /><span className="private-badge"><LockKeyhole /> 仅受邀</span>
-        <IconButton label={roster ? '隐藏成员列表' : '显示成员列表'} pressed={roster} onClick={() => setRoster(!roster)}><Users /></IconButton>
-      </header>
-      {updateInfo.version && skippedUpdate !== updateInfo.version && ['available', 'downloading', 'ready'].includes(updateInfo.status) &&
-        <div className="update-banner" data-testid="update-banner" role="status"><Download size={15} />
-          <span>{updateInfo.status === 'downloading' ? '正在后台下载 ' + updateInfo.version : updateInfo.status === 'ready' ? '更新已下载，退出时可安装' : '有新版本 ' + updateInfo.version}</span>
-          {updateInfo.status === 'available' && !updateInfo.required && <button className="link-button" type="button" data-testid="update-download" onClick={() => void call('update.accept')}>下载更新</button>}
-          <button className="link-button" type="button" data-testid="update-skip" onClick={() => setSkippedUpdate(updateInfo.version)}>稍后</button>
-        </div>}
-      <div className={'room-content' + (chatOpen ? ' with-chat' : '')} style={chatOpen ? { '--voice-share': split + 'fr', '--chat-share': (100 - split) + 'fr' } as CSSProperties : undefined}>
-      <div className="room-body">
-        {voice.error && <div className="status-banner" role="alert" data-testid="voice-notice"><span>{voice.error}</span><IconButton label="关闭提示" onClick={() => engine.notice('')}><X /></IconButton></div>}
-        {voice.playbackBlocked && <div className="status-banner"><span>系统暂未开始播放队友的声音。</span><button className="button soft" onClick={() => void engine.startAudio()}>启用收听</button></div>}
-        {chatOpen && <RoomRestrictions key={selected?.id} rules={ownRules ?? noRules} now={now} release={controlMember} />}
-        {selected && <div className="room-caption"><div className={'caption-label' + (inSelected ? '' : ' caption-preview')}><span className="status-dot" />
-          {inSelected ? voice.status === 'reconnecting' ? '重连中' : '通话中' : '语音预览'}
-        </div><span data-testid="room-count">{presenceUnavailable ? '成员状态暂不可用' : selectedMembers.length + ' / ' + selected.capacity + ' 人'}</span></div>}
-        {selectedMembers.length > 0 ? <>
-          <div className={'stage stage-' + Math.min(selectedMembers.length, 5)} data-testid={inSelected ? 'voice-stage' : 'voice-preview'}>
-            {selectedMembers.map((m, i) => <button className={'member-card ' + colors[i % colors.length] + (m.speaking ? ' talking' : '')} key={m.id} disabled={m.self || !inSelected} onClick={() => setVolumeFor(m.id)} title={m.self || !inSelected ? m.name : '调整 ' + m.name + ' 的音量'} data-testid={m.self ? 'self-tile' : 'peer-tile'}>
-              <div className="card-waves" />
-              <Avatar name={m.name} index={i} speaking={m.speaking} />
-              <span className="member-label">{m.name}{m.self && <small> 你</small>}</span>
-              <span className="tile-icons">{m.music && <Music2 />}{m.mic ? <Mic /> : <MicOff />}</span>
-            </button>)}
+    <aside className="channels" aria-label={direct ? '私信会话及个人资料' : '子频道及个人资料'}>
+      <div className="workspace-heading"><span>{direct ? '私信' : selectedGroup?.name ?? '大频道'}</span>
+        {!direct && selectedGroup && supportsGroups && admin &&
+          <IconButton className="channel-action" label={'管理 ' + selectedGroup.name} test="group-edit" onClick={() => setEditingGroup(selectedGroup)}><Ellipsis /></IconButton>}</div>
+      <nav className="channel-scroll" aria-label={direct ? '私信会话' : '子频道'}>
+        {direct ? <>
+          <div className="small-label">会话</div>
+          {contacts.map(person => <button key={person.id} type="button" className={'channel contact ' + (peer?.id === person.id ? 'selected' : '')}
+            data-testid={'contact-' + person.id} aria-pressed={peer?.id === person.id} onClick={() => selectDirect(person.id)}>
+            <Avatar name={person.name} /><span>{person.name}</span>{person.online && <i className="status-dot green" aria-label="在线" />}
+          </button>)}
+          {!contacts.length && <p className="channel-empty">{workspace?.people ? '暂无可私信的成员。' : '服务端需要支持私信。'}</p>}
+        </> : <>
+          <div className="small-label">子频道
+            {canCreateChild && <IconButton className="channel-action" label="新建子频道" test="channel-create" onClick={() => setEditing('new')}><Plus /></IconButton>}
           </div>
-          {hasMusic && <div className="music-strip" data-testid="music-strip"><span className="music-note"><Music2 /></span><div><strong>{inSelected && voice.sharing ? '你正在共享伴奏' : '房间正在播放伴奏'}</strong>
-            {inSelected && <small>{voice.sharing ?? '与队友语音分开调节'}</small>}</div>
-            {inSelected && <><label>伴奏音量<input data-testid="music-receive-volume" type="range" min={0} max={100} value={voice.musicVolume} onChange={e => engine.setMusicVolume(Number(e.target.value))} /></label><span>{voice.musicVolume}%</span></>}
-          </div>}
-        </> : <div className="room-empty" data-testid="room-empty">
-          <span className="empty-glyph"><Volume2 /></span>
-          <h1>{selected?.name ?? '选择一个语音频道'}</h1>
-          <p>{selected ? '当前频道没有语音成员。' : '房主配置频道后，你就可以加入语音。'}</p>
-        </div>}
-        {selected && !inSelected && <div className="preview-actions">
-          <button className="button primary join-button" data-testid="join" disabled={voice.status === 'joining'} onClick={() => void engine.join(selected)}>
-            {voice.status === 'joining' ? <LoaderCircle className="spin" /> : <Headphones />} {voice.status === 'joining' ? '正在连接…' : '加入语音'}
-          </button>
-          {live && <button className="link-button" onClick={() => setSelectedId(voice.channelId)}>返回通话中的频道 <ChevronRight /></button>}
-          <small>加入后可查看聊天{boot.preferences.pushToTalk ? '' : '，麦克风可用时自动开启'}</small>
-        </div>}
-      </div>
-      {selected && chatOpen && <><ChannelSplit value={split} preview={setDraggedSplit} commit={saveSplit} />
-        <ChatPanel key={selected.id} channelId={selected.id} admin={channelManageable(selected.id)} ready={chatReady} connectionError={chatError} restricted={Boolean(ownRules?.chatUntil)} />
-      </>}
-      </div>
-      <footer className="call-bar">
-        <div className="call-status"><span className={'status-dot ' + (live ? 'green' : 'gray')} /><div><strong>{live ? (qualityLabel[voice.quality] || '已连接') : '尚未加入语音'}</strong><small>{live ? (boot.preferences.pushToTalk ? '按住 ' + boot.preferences.hotkey + ' 说话' : '语音优先') : '加入后使用通话控件'}</small></div></div>
+          {children.length === 0 && <p className="channel-empty">还没有子频道。</p>}
+          {children.map(channel => <div className="channel-row" key={channel.id}>
+            <button data-testid={'channel-' + channel.id} className={'channel ' + (channel.id === selected?.id ? 'selected' : '')}
+              aria-pressed={channel.id === selected?.id} onClick={() => selectChannel(channel)}><Hash size={16} /><span>{channel.name}</span></button>
+            {channelManageable(channel.id) && <IconButton className="channel-action" label={'编辑 ' + channel.name}
+              test={'channel-edit-' + channel.id} onClick={() => setEditing(channel)}><Ellipsis /></IconButton>}
+          </div>)}
+        </>}
+      </nav>
+      {live && <section className="voice-dock" aria-label="语音控制">
+        <div className="voice-dock-status"><Wifi size={15} /><strong>{voice.status === 'reconnecting' ? '正在重连' : '语音已连接'}</strong></div>
+        <button className="voice-jump" type="button" title={joined?.name} disabled={!joined} onClick={() => joined && selectChannel(joined)}>
+          <span>{joined?.name}</span><span>· {duration}</span>
+        </button>
         <div className="call-buttons">
-          <IconButton label={voice.mic ? '关闭麦克风' : '打开麦克风'} test="mic" pressed={voice.mic} className={!voice.mic ? 'control-muted' : 'control-active'} onClick={() => engine.toggleMic()} disabled={!live}>{voice.mic ? <Mic /> : <MicOff />}</IconButton>
-          <IconButton label={voice.deafened ? '恢复收听' : '关闭收听和麦克风'} test="deafen" pressed={voice.deafened} className={voice.deafened ? 'control-muted' : ''} onClick={() => engine.toggleDeafen()} disabled={!live}>{voice.deafened ? <HeadphoneOff /> : <Headphones />}</IconButton>
-          <IconButton label="共享伴奏" test="music-open" pressed={Boolean(voice.sharing)} className={voice.sharing ? 'control-active' : ''} onClick={openMusic} disabled={!live}><Music2 /></IconButton>
-          <IconButton label="断开语音" test="leave" className="hangup" onClick={() => void engine.leave()} disabled={!live}><PhoneOff /></IconButton>
+          <IconButton label={voice.mic ? '关闭麦克风' : '打开麦克风'} test="mic" pressed={voice.mic} className={!voice.mic ? 'control-muted' : 'control-active'}
+            onClick={() => engine.toggleMic()}>{voice.mic ? <Mic /> : <MicOff />}</IconButton>
+          <IconButton label={voice.deafened ? '恢复收听' : '关闭收听和麦克风'} test="deafen" pressed={voice.deafened} className={voice.deafened ? 'control-muted' : ''}
+            onClick={() => engine.toggleDeafen()}>{voice.deafened ? <HeadphoneOff /> : <Headphones />}</IconButton>
+          <IconButton label="共享伴奏" test="music-open" pressed={Boolean(voice.sharing)} className={voice.sharing ? 'control-active' : ''} onClick={openMusic}><Music2 /></IconButton>
+          <IconButton label="断开语音" test="leave" className="hangup" onClick={() => void engine.leave()}><PhoneOff /></IconButton>
         </div>
-        <IconButton className="call-settings" label="音频设置" onClick={() => setSettingsOpen(true)}><SlidersHorizontal /></IconButton>
-      </footer>
-    </section>
-    {roster && <aside className="roster" aria-label="成员列表">
-      <div className="roster-heading"><Users /> <span>成员</span><span className="member-number">{selectedMembers.length}</span></div>
-      <div className="roster-scroll">
-        <div className="small-label roster-label">语音在线</div>
-        {selectedMembers.map((m, i) => <button key={m.id} type="button" className="roster-member" data-testid={'roster-' + (m.self ? 'self' : 'peer')}
-          disabled={m.self || !inSelected} data-member-id={m.id} onContextMenu={event => openMemberMenu(event, m)} onClick={() => setVolumeFor(m.id)}
-          title={chatOpen && canModerate(selectedRole, m) ? '右键管理 ' + m.name : m.self || !inSelected ? m.name : '调整队友音量'}>
-          <Avatar name={m.name} index={i} speaking={m.speaking} /><span className="roster-name">
-            <span className="roster-name-row"><strong>{m.name}{m.self && <small> 你</small>}</strong><RoleBadge role={m.role} /></span>
-            <small>{m.rules?.micUntil ? '已闭麦' : m.rules?.listenUntil ? '收听已暂停' : m.rules?.chatUntil ? '已禁言' : m.speaking ? '正在讲话' : m.music ? '共享伴奏' : m.mic ? '麦克风开启' : '已静音'}</small></span>
-          {m.music ? <Music2 size={15} /> : m.mic ? <Mic size={15} /> : <MicOff size={15} />}
-        </button>)}
-        {!selectedMembers.length && <div className="roster-tip">{presenceUnavailable ? '成员状态暂不可用' : '频道里暂无成员'}</div>}
-      </div>
+        {hasMusic && <label className="dock-music" data-testid="music-strip">伴奏音量
+          <input data-testid="music-receive-volume" aria-label="伴奏音量" type="range" min={0} max={100} value={voice.musicVolume}
+            onChange={event => engine.setMusicVolume(Number(event.target.value))} />
+        </label>}
+        {(boot.preferences.pushToTalk || voice.quality === 'poor' || voice.quality === 'lost') && <small className="dock-hint">
+          {boot.preferences.pushToTalk ? '按住 ' + boot.preferences.hotkey + ' 说话' : (qualityLabel[voice.quality] || '连接中')}
+        </small>}
+        {joined && voice.status === 'connected' && <RoomRestrictions key={joined.id} rules={ownRules ?? noRules} now={now}
+          release={(action, enabled) => controlMember(action, enabled, '', joined.id)} />}
+      </section>}
       <div className="user-bar">
         <button type="button" className="user-profile" title="个人资料与账号" aria-label="个人资料与账号" data-testid="account-open" onClick={() => setAccountOpen(true)}>
-          <Avatar name={account.user.name} /><span className="user-name"><strong>{account.user.name}</strong><span><i className="status-dot" /> 在线 <RoleBadge role={selectedRole} /></span></span>
+          <Avatar name={account.user.name} /><span className="user-name">
+            <span className="profile-name"><strong>{account.user.name}</strong><RoleBadge role={direct ? globalRole : selectedRole} /></span>
+            <span><i className="status-dot green" /> 在线</span>
+          </span>
         </button>
         <IconButton label="音频设置" test="settings-open" onClick={() => setSettingsOpen(true)}><Settings /></IconButton>
         <IconButton label="退出登录" test="logout" onClick={() => void logout()}><LogOut /></IconButton>
       </div>
+    </aside>
+    <section className="room" aria-label="聊天与记录">
+      <header className="room-top">
+        {direct && peer ? <Avatar name={peer.name} /> : direct ? <MessageCircle className="header-icon" /> : <Hash className="header-icon" />}
+        <div className="header-label"><strong>{direct ? peer?.name ?? '私信' : selected?.name ?? '选择子频道'}</strong>
+          {!direct && selected?.description && <span>{selected.description}</span>}</div>
+        <span className="top-spacer" />
+        {!direct && selected && <span className="private-badge"><LockKeyhole /> 仅频道成员</span>}
+        <IconButton label={roster ? '隐藏成员列表' : '显示成员列表'} pressed={roster} onClick={() => setRoster(!roster)}><Users /></IconButton>
+      </header>
+      {updateInfo.version && ['available', 'downloading', 'ready', 'error'].includes(updateInfo.status) &&
+        <div className="update-banner" data-testid="update-banner" role="status"><Download size={15} />
+          <span>{updateMessage(updateInfo)}{updateInfo.required && ' · 必需更新'}</span>
+          <UpdateButtons state={updateInfo} now={updateNow} later={updateLater} />
+        </div>}
+      {voice.error && <div className="status-banner" role="alert" data-testid="voice-notice"><span>{voice.error}</span><IconButton label="关闭提示" onClick={() => engine.notice('')}><X /></IconButton></div>}
+      {voice.playbackBlocked && <div className="status-banner"><span>系统暂未开始播放队友的声音。</span><button className="button soft" onClick={() => void engine.startAudio()}>启用收听</button></div>}
+      {direct && peer?.conversationId ? <ChatPanel key={peer.conversationId} channelId={peer.conversationId} conversationName={peer.name}
+        selfId={account.user.id} direct admin={false} ready={chatReady} connectionError={chatError} restricted={false} roleFor={roleFor} />
+        : !direct && selected && chatOpen ? <ChatPanel key={selected.id} channelId={selected.id} conversationName={selected.name} selfId={account.user.id}
+          admin={channelManageable(selected.id)} ready={chatReady} connectionError={chatError} restricted={Boolean(ownRules?.chatUntil)} roleFor={roleFor} />
+          : <div className="conversation-empty" data-testid="room-empty">
+            <MessageCircle size={24} />
+            <p>{direct ? '选择一个会话开始私信。' : selected ? '加入语音后查看该频道的聊天。' : '请选择或新建子频道。'}</p>
+            {!direct && selected && !inSelected && <button className="button primary join-button" data-testid="join" disabled={voice.status === 'joining'}
+              onClick={() => void engine.join(selected)}>
+              {voice.status === 'joining' ? <LoaderCircle className="spin" /> : <Headphones />}
+              {voice.status === 'joining' ? '正在连接…' : '加入语音'}
+            </button>}
+          </div>}
+    </section>
+    {roster && <aside className="roster" aria-label={direct ? '会话成员' : '频道成员'}>
+      <div className="roster-heading"><Users /><span>{direct ? '会话成员' : '频道成员'}</span>
+        <span className="member-number">{selectedMembers.length + rosterDirectory.length}</span></div>
+      <div className="roster-scroll">
+        {!direct && selected && <div className="small-label roster-label" data-testid="room-count">
+          {presenceUnavailable ? '成员状态暂不可用' : '通话中 · ' + selectedMembers.length + ' / ' + selected.capacity}
+        </div>}
+        {selectedMembers.map(member => <button key={member.id} type="button" className="roster-member"
+          data-testid={'roster-' + (member.self ? 'self' : 'peer')} aria-disabled={member.self || !inSelected}
+          data-member-id={member.id} onContextMenu={event => openMemberMenu(event,member)} onClick={() => {
+            if (!member.self && inSelected) setVolumeFor(member.id);
+          }} title={chatOpen && canModerate(selectedRole,member) ? '右键管理 ' + member.name : member.self || !inSelected ? member.name : '调整队友音量'}>
+          <Avatar name={member.name} speaking={member.speaking} /><span className="roster-name">
+            <span className="roster-name-row"><strong>{member.name}{member.self && <small> 你</small>}</strong><RoleBadge role={member.role} /></span>
+            <small>{member.rules?.micUntil ? '已闭麦' : member.rules?.listenUntil ? '收听已暂停' : member.rules?.chatUntil ? '已禁言' :
+              member.speaking ? '正在讲话' : member.music ? '共享伴奏' : member.mic ? '麦克风开启' : '已静音'}</small></span>
+          {member.music ? <Music2 size={15} /> : member.mic ? <Mic size={15} /> : <MicOff size={15} />}
+        </button>)}
+        {(direct ? [{ label: '参与者', people: rosterDirectory }] : [
+          { label: '在线', people: rosterDirectory.filter(person => person.online) },
+          { label: '离线', people: rosterDirectory.filter(person => !person.online) },
+        ]).filter(section => section.people.length > 0).map(section => <section key={section.label} aria-label={section.label}>
+          <div className="small-label roster-label">{section.label}</div>
+          {section.people.map(person => <div key={person.id} className="roster-directory-member">
+            <Avatar name={person.name} /><span className="roster-name"><span className="roster-name-row">
+              <strong>{person.name}{person.id === accountId && <small> 你</small>}</strong><RoleBadge role={directoryRole(person)} /></span>
+              <small>{person.online ? '在线' : '离线'}</small></span>
+            {!direct && person.conversationId && <IconButton className="member-direct" label={'私信 ' + person.name} onClick={() => selectDirect(person.id)}><MessageCircle /></IconButton>}
+          </div>)}
+        </section>)}
+        {!selectedMembers.length && !rosterDirectory.length && <div className="roster-tip">{presenceUnavailable ? '成员状态暂不可用' : '暂无成员'}</div>}
+      </div>
     </aside>}
+
     {memberMenu && modalMember && chatOpen && roster && canModerate(selectedRole, modalMember) && <MemberMenu member={modalMember} actor={selectedRole}
       x={memberMenu.x} y={memberMenu.y} close={dismissMemberMenu} control={(action, enabled) => controlMember(action, enabled, modalMember.id)} />}
     {settingsOpen && <SettingsDialog boot={boot} devices={devices} engine={engine} save={changePrefs} close={() => setSettingsOpen(false)} logout={() => void logout()}
       checkUpdate={checkForUpdate} />}
     {updatesOpen && <Modal label="客户端更新" subtitle={'当前版本 ' + boot.version} icon={<Download />} close={() => setUpdatesOpen(false)}>
       <div className="modal-form" data-testid="updates-dialog">
-        <p className="muted-text" role="status">{updateInfo.status === 'ready' ? '已下载 ' + updateInfo.version + '，退出时可安装。' :
-          updateInfo.status === 'downloading' ? '正在后台下载 ' + updateInfo.version + '。' :
-          updateInfo.status === 'available' ? '发现新版本 ' + updateInfo.version + '。' :
-          updateInfo.status === 'error' ? '暂时无法完成更新，请稍后重试。' :
-          updateInfo.status === 'disabled' ? '当前连接未配置签名更新。' :
-          updateInfo.status === 'current' ? '当前没有可下载的新版本。' : '正在检查更新…'}</p>
+        <p className="muted-text" role="status">{updateMessage(updateInfo)}{updateInfo.required && ' · 必需更新'}</p>
         <div className="modal-actions"><button className="button soft" type="button" onClick={() => setUpdatesOpen(false)}>关闭</button>
-          {updateInfo.version && ['available', 'error'].includes(updateInfo.status) && <button className="button primary" type="button" onClick={() => void call('update.accept')}>下载更新</button>}
+          <UpdateButtons state={updateInfo} now={updateNow} later={updateLater} dialog />
           {updateInfo.status === 'error' && !updateInfo.version && <button className="button primary" type="button" onClick={checkForUpdate}>重新检查</button>}
         </div>
       </div>
@@ -479,8 +564,20 @@ export function App() {
     {cacheOpen && <Modal label="缓存管理" icon={<Settings />} close={() => setCacheOpen(false)}>
       <CacheSettings connected={live} close={() => setCacheOpen(false)} />
     </Modal>}
-    {editing && (editing === 'new' ? admin : channelManageable(editing.id)) && <ChannelDialog value={editing === 'new' ? null : editing} close={() => setEditing(null)}
-      changed={async () => { setWorkspace(await call<Workspace>('workspace.state')); setEditing(null); }} />}
+    {editingGroup && supportsGroups && admin && <GroupDialog value={editingGroup === 'new' ? null : editingGroup}
+      count={editingGroup === 'new' ? 0 : channels.filter(channel => groupOf(channel) === editingGroup.id).length}
+      close={() => setEditingGroup(null)} changed={async id => {
+        setWorkspace(await call<Workspace>('workspace.state'));
+        if (id) { setGroupId(id); setSelectedId(null); }
+        setEditingGroup(null);
+      }} />}
+    {editing && (editing === 'new' ? canCreateChild : channelManageable(editing.id)) &&
+      <ChannelDialog value={editing === 'new' ? null : editing} groupId={supportsGroups ? selectedGroup?.id : undefined}
+        close={() => setEditing(null)} changed={async id => {
+          setWorkspace(await call<Workspace>('workspace.state'));
+          if (id) setSelectedId(id);
+          setEditing(null);
+        }} />}
     {accountOpen && <AccountDialog user={account.user} close={() => setAccountOpen(false)} saved={user => setAccount(current => current && { ...current, user })}
       passwordChanged={saved => void logout(saved ? '密码已更新，请使用新密码重新登录。' : '密码已更新，本地保存失败，请输入新密码。')} />}
     {musicOpen && <Modal label="共享伴奏" subtitle="把所选应用的声音单独发给队友。" icon={<Music2 />} close={() => setMusicOpen(false)}>
@@ -531,7 +628,45 @@ function ProfileDialog({ configured, close, onSaved }: { configured: boolean; cl
   </Modal>;
 }
 
-function ChannelDialog({ value, close, changed }: { value: Channel | null; close: () => void; changed: () => Promise<void> }) {
+function GroupDialog({ value, count, close, changed }: {
+  value: ChannelGroup | null; count: number; close: () => void; changed: (id?: string) => Promise<void>;
+}) {
+  const [name, setName] = useState(value?.name ?? '');
+  const [confirm, setConfirm] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  async function save(remove = false) {
+    if (busy) return;
+    setBusy(true);
+    setError('');
+    try {
+      if (remove) {
+        await call('group.delete', { id: value?.id });
+        await changed();
+      } else {
+        const result = await call<{ groupId?: string }>(value ? 'group.update' : 'group.create', { id: value?.id ?? '', name: name.trim() });
+        await changed(value ? undefined : result.groupId);
+      }
+    } catch (failure) { setError(message(failure, '大频道更新失败，请稍后重试。')); }
+    finally { setBusy(false); }
+  }
+  return <Modal label={value ? '编辑大频道' : '新建大频道'} icon={<Layers />} close={() => { if (!busy) close(); }}>
+    <form className="modal-form" onSubmit={event => { event.preventDefault(); void save(); }}>
+      <label htmlFor="group-name">大频道名称</label>
+      <input id="group-name" data-testid="group-name" required value={name} maxLength={64} disabled={busy} onChange={event => setName(event.target.value)} />
+      {error && <p className="form-error" role="alert">{error}</p>}
+      {confirm && <p className="form-error">{count ? '删除该大频道会一并删除其中的 ' + count + ' 个子频道、聊天和图片，并中断其中的通话。' : '确认删除这个大频道？'}</p>}
+      <div className="modal-actions">
+        {value && <button className={confirm ? 'button danger' : 'link-button'} type="button" disabled={busy} data-testid="group-delete"
+          onClick={() => confirm ? void save(true) : setConfirm(true)}>{confirm ? '确认删除' : '删除大频道'}</button>}
+        <button className="button soft" type="button" disabled={busy} onClick={() => confirm ? setConfirm(false) : close()}>取消</button>
+        <button className="button primary" type="submit" data-testid="group-save" disabled={busy || !name.trim() || confirm}>{value ? '保存大频道' : '创建大频道'}</button>
+      </div>
+    </form>
+  </Modal>;
+}
+
+function ChannelDialog({ value, groupId, close, changed }: { value: Channel | null; groupId?: string; close: () => void; changed: (id?: string) => Promise<void> }) {
   const [name, setName] = useState(value?.name ?? '');
   const [description, setDescription] = useState(value?.description ?? '');
   const [capacity, setCapacity] = useState(value?.capacity ?? 5);
@@ -543,9 +678,14 @@ function ChannelDialog({ value, close, changed }: { value: Channel | null; close
     setBusy(true);
     setError('');
     try {
-      if (remove) await call('channel.delete', { id: value?.id });
-      else await call(value ? 'channel.update' : 'channel.create', { id: value?.id ?? '', name: name.trim(), description, capacity });
-      await changed();
+      if (remove) {
+        await call('channel.delete', { id: value?.id });
+        await changed();
+      } else {
+        const result = await call<{ channelId?: string }>(value ? 'channel.update' : 'channel.create',
+          { id: value?.id ?? '', groupId, name: name.trim(), description, capacity });
+        await changed(value ? undefined : result.channelId);
+      }
     } catch (failure) {
       setError(message(failure, '频道更新失败，请稍后重试。'));
     } finally { setBusy(false); }
@@ -684,7 +824,7 @@ function SettingsDialog({ boot, devices, engine, save, close, logout, checkUpdat
       <div className="default-device" data-testid="default-output">{boot.devices.speaker ?? 'Windows 未检测到默认扬声器'}</div>
       <div className="settings-divider" />
       <div className="mic-processing">
-        <label><input type="checkbox" data-testid="noise-suppression" checked={draft.noiseSuppression} onChange={event => update('noiseSuppression', event.target.checked)} /> 噪声抑制</label>
+        <label><input type="checkbox" data-testid="noise-suppression" checked={draft.noiseSuppression} onChange={event => update('noiseSuppression', event.target.checked)} /> 增强降噪</label>
         <label><input type="checkbox" data-testid="echo-cancellation" checked={draft.echoCancellation} onChange={event => update('echoCancellation', event.target.checked)} /> 回声消除</label>
         <label><input type="checkbox" data-testid="auto-gain-control" checked={draft.autoGainControl} onChange={event => update('autoGainControl', event.target.checked)} /> 自动增益</label>
       </div>
@@ -694,6 +834,10 @@ function SettingsDialog({ boot, devices, engine, save, close, logout, checkUpdat
         <option value={16000}>节省带宽 · 16 kbps</option>
         <option value={24000}>标准 · 24 kbps</option>
         <option value={40000}>清晰 · 40 kbps</option>
+        <option value={48000}>高音质 · 48 kbps</option>
+        <option value={64000}>高音质 · 64 kbps</option>
+        <option value={80000}>高音质 · 80 kbps</option>
+        <option value={96000}>高音质 · 96 kbps</option>
       </select>
       <MicCheck engine={engine} preferences={draft} />
       <div className="settings-divider" />

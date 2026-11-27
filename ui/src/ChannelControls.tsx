@@ -1,11 +1,15 @@
 import { useEffect, useRef, useState } from 'react';
-import type { PointerEvent } from 'react';
-import { HeadphoneOff, MessageSquareOff, MicOff, ShieldCheck } from 'lucide-react';
+import { Crown, GitFork, HeadphoneOff, MessageSquareOff, MicOff, ShieldCheck } from 'lucide-react';
 import { message } from './native';
 import type { MemberAction, MemberRole, RoomRules } from './native';
 import type { Member } from './voice';
 
-const titles = { owner: '总管理', recursive: '递归管理', channel: '频道管理' };
+const badges = {
+  owner: { title: '总管理', detail: '可管理工作区、频道和权限', Icon: Crown },
+  recursive: { title: '递归管理', detail: '可管理频道并委派管理权限', Icon: GitFork },
+  channel: { title: '频道管理', detail: '权限仅在获授权的子频道内生效', Icon: ShieldCheck },
+};
+const colors = ['violet', 'sky', 'amber', 'sage', 'rose'];
 const restrictions = [
   { key: 'listenUntil', action: 'listen', name: '静音', release: '恢复收听', Icon: HeadphoneOff },
   { key: 'micUntil', action: 'mic', name: '闭麦', release: '解除闭麦', Icon: MicOff },
@@ -13,7 +17,18 @@ const restrictions = [
 ] as const;
 
 export function RoleBadge({ role }: { role?: MemberRole }) {
-  return role && role !== 'member' ? <span className={'role-badge role-' + role} data-testid={'role-' + role}>{titles[role]}</span> : null;
+  if (!role || role === 'member') return null;
+  const { title, detail, Icon } = badges[role];
+  return <span className={'role-badge role-' + role} data-testid={'role-' + role} role="img" aria-label={title}
+    title={title + ' · ' + detail}><Icon size={12} aria-hidden="true" /></span>;
+}
+
+export function Avatar({ name, index, speaking = false, className = '' }: { name: string; index?: number; speaking?: boolean; className?: string }) {
+  const trimmed = name.trim();
+  const letter = trimmed.codePointAt(0) ?? 0;
+  const initials = [...trimmed].slice(0, letter > 127 ? 1 : 2).join('').toUpperCase() || '队';
+  return <span className={'avatar ' + colors[(index ?? letter) % colors.length] + (speaking ? ' is-speaking' : '') + ' ' + className}
+    aria-hidden="true">{initials}</span>;
 }
 
 export function canModerate(actor: MemberRole, member: Member) {
@@ -80,24 +95,4 @@ export function RoomRestrictions({ rules, now, release }: { rules: RoomRules; no
     })}
     {error && <span role="alert">{error}</span>}
   </div> : null;
-}
-
-const clamp = (value: number) => Math.min(85, Math.max(15, Math.round(value)));
-
-export function ChannelSplit({ value, preview, commit }: { value: number; preview: (value: number | null) => void; commit: (value: number) => void }) {
-  const ratioAt = (event: PointerEvent<HTMLDivElement>) => {
-    const bounds = event.currentTarget.parentElement!.getBoundingClientRect();
-    return clamp(100 * (event.clientY - bounds.top - 4) / Math.max(1, bounds.height - 8));
-  };
-  return <div className="room-split" data-testid="room-split" role="separator" tabIndex={0} aria-label="调整语音和聊天区域高度"
-    aria-orientation="horizontal" aria-valuemin={15} aria-valuemax={85} aria-valuenow={value} title="上下拖动调整语音和聊天区域"
-    onPointerDown={event => { if (event.button === 0) event.currentTarget.setPointerCapture(event.pointerId); }}
-    onPointerMove={event => { if (event.currentTarget.hasPointerCapture(event.pointerId)) preview(ratioAt(event)); }}
-    onPointerUp={event => { if (event.currentTarget.hasPointerCapture(event.pointerId)) commit(ratioAt(event)); }}
-    onPointerCancel={() => preview(null)}
-    onKeyDown={event => {
-      const adjustment = event.key === 'ArrowDown' ? value + 5 : event.key === 'ArrowUp' ? value - 5 :
-        event.key === 'Home' ? 15 : event.key === 'End' ? 85 : null;
-      if (adjustment != null) { event.preventDefault(); commit(clamp(adjustment)); }
-    }}><span /></div>;
 }

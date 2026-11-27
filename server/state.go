@@ -23,6 +23,7 @@ import (
 )
 
 const capacity = 5
+const defaultGroupID = "default"
 
 var accountName = regexp.MustCompile(`^[a-z0-9][a-z0-9_.-]{2,31}$`)
 var channelID = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,47}$`)
@@ -44,9 +45,15 @@ type account struct {
 
 type channel struct {
 	ID          string `json:"id"`
+	GroupID     string `json:"groupId,omitempty"`
 	Name        string `json:"name"`
 	Description string `json:"description"`
 	Capacity    int    `json:"capacity"`
+}
+
+type channelGroup struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
 }
 
 type state struct {
@@ -54,6 +61,7 @@ type state struct {
 	Workspace string                          `json:"workspace"`
 	Accounts  map[string]account              `json:"accounts"`
 	Channels  map[string]channel              `json:"channels"`
+	Groups    map[string]channelGroup         `json:"groups,omitempty"`
 	RoomRules map[string]map[string]roomRules `json:"roomRules,omitempty"`
 }
 
@@ -64,8 +72,9 @@ func loadState(path string) (state, error) {
 		s = state{
 			Version: 1, Workspace: "Squad Voice",
 			Accounts: map[string]account{},
+			Groups:   map[string]channelGroup{defaultGroupID: {ID: defaultGroupID, Name: "Squad Voice"}},
 			Channels: map[string]channel{
-				"voice-lobby": {ID: "voice-lobby", Name: "开黑大厅", Description: "语音与伴奏", Capacity: capacity},
+				"voice-lobby": {ID: "voice-lobby", GroupID: defaultGroupID, Name: "开黑大厅", Description: "语音与伴奏", Capacity: capacity},
 			},
 		}
 		return s, writeFile(path, s, 0600)
@@ -88,6 +97,18 @@ func loadState(path string) (state, error) {
 		if ch.ID != id || !validChannel(ch) {
 			return s, errors.New("invalid channel in state")
 		}
+		if ch.GroupID == "" {
+			ch.GroupID = s.ensureDefaultGroup()
+			s.Channels[id] = ch
+		}
+		if _, ok := s.Groups[ch.GroupID]; !ok {
+			return s, errors.New("unknown parent group in state")
+		}
+	}
+	for id, group := range s.Groups {
+		if id != group.ID || !validGroup(group) {
+			return s, errors.New("invalid group in state")
+		}
 	}
 	for channel, users := range s.RoomRules {
 		if _, ok := s.Channels[channel]; !ok {
@@ -105,8 +126,23 @@ func loadState(path string) (state, error) {
 func (s state) copy() state {
 	s.Accounts = maps.Clone(s.Accounts)
 	s.Channels = maps.Clone(s.Channels)
+	s.Groups = maps.Clone(s.Groups)
 	s.RoomRules = maps.Clone(s.RoomRules)
 	return s
+}
+
+func (s *state) ensureDefaultGroup() string {
+	if s.Groups == nil {
+		s.Groups = make(map[string]channelGroup)
+	}
+	if _, exists := s.Groups[defaultGroupID]; !exists {
+		s.Groups[defaultGroupID] = channelGroup{ID: defaultGroupID, Name: s.Workspace}
+	}
+	return defaultGroupID
+}
+
+func validGroup(group channelGroup) bool {
+	return channelID.MatchString(group.ID) && validText(group.Name, 64, false)
 }
 
 func validChannel(ch channel) bool {

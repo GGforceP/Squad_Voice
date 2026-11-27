@@ -5,18 +5,29 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 	"time"
 )
 
 type voiceMember struct {
-	ID    string    `json:"id"`
-	Name  string    `json:"name"`
-	Mic   bool      `json:"mic"`
-	Music bool      `json:"music"`
-	Role  role      `json:"role,omitempty"`
-	Rules roomRules `json:"rules"`
+	ID     string    `json:"id"`
+	UserID string    `json:"userId,omitempty"`
+	Name   string    `json:"name"`
+	Mic    bool      `json:"mic"`
+	Music  bool      `json:"music"`
+	Role   role      `json:"role,omitempty"`
+	Rules  roomRules `json:"rules"`
+}
+
+type directoryMember struct {
+	ID              string   `json:"id"`
+	Name            string   `json:"name"`
+	Role            role     `json:"role"`
+	Online          bool     `json:"online"`
+	ManagedChannels []string `json:"managedChannels,omitempty"`
+	Conversation    string   `json:"conversationId,omitempty"`
 }
 
 type presenceEntry struct {
@@ -121,10 +132,11 @@ func (s *service) workspace(w http.ResponseWriter, r *http.Request, key tokenKey
 			rooms[voice.Channel] = group
 		}
 		_, user := s.accountByID(voice.UserID)
-		group.members[voice.Identity] = voiceMember{Name: user.Name, Role: s.channelRole(user, voice.Channel), Rules: s.rules(voice.Channel, user.ID)}
+		group.members[voice.Identity] = voiceMember{UserID: user.ID, Name: user.Name, Role: s.channelRole(user, voice.Channel), Rules: s.rules(voice.Channel, user.ID)}
 	}
-	workspace, channels := s.state.Workspace, s.channels()
+	workspace, channels, groups := s.state.Workspace, s.channels(), s.groups()
 	managed, rank := s.managedChannels(member), s.globalRole(member)
+	directory := s.directory(member)
 	s.mu.Unlock()
 
 	presence := make(map[string][]voiceMember, len(rooms))
@@ -138,7 +150,7 @@ func (s *service) workspace(w http.ResponseWriter, r *http.Request, key tokenKey
 		visible := make([]voiceMember, 0, len(active))
 		for _, user := range active {
 			if metadata, exists := group.members[user.ID]; exists {
-				user.Name, user.Role, user.Rules = metadata.Name, metadata.Role, metadata.Rules
+				user.UserID, user.Name, user.Role, user.Rules = metadata.UserID, metadata.Name, metadata.Role, metadata.Rules
 				visible = append(visible, user)
 			}
 		}
@@ -146,8 +158,85 @@ func (s *service) workspace(w http.ResponseWriter, r *http.Request, key tokenKey
 	}
 	response(w, http.StatusOK, map[string]any{
 		"name": workspace, "admin": rank != roleMember, "role": rank, "managedChannels": managed, "channels": channels,
+		"groups": groups, "people": directory,
 		"presence": presence, "presenceUnavailable": unavailable,
 	})
+}
+
+func (s *service) groups() []channelGroup {
+	groups := make([]channelGroup, 0, len(s.state.Groups))
+	for _, group := range s.state.Groups {
+		groups = append(groups, group)
+	}
+	slices.SortFunc(groups, func(a, b channelGroup) int { return strings.Compare(a.ID, b.ID) })
+	return groups
+}
+
+// Called under the service lock with an authenticated directory reader.
+func (s *service) directory(reader account) []directoryMember {
+	online := make(map[string]bool, len(s.sessions))
+	now := time.Now()
+	for _, session := range s.sessions {
+		if now.Before(session.Expires) {
+			online[session.UserID] = true
+		}
+	}
+	people := make([]directoryMember, 0, len(s.state.Accounts))
+	for _, member := range s.state.Accounts {
+		if !member.Enabled {
+			continue
+		}
+		person := directoryMember{ID: member.ID, Name: member.Name, Role: s.globalRole(member), Online: online[member.ID]}
+		if person.Role == roleMember {
+			person.ManagedChannels = s.managedChannels(member)
+		}
+		if person.ID != reader.ID {
+			person.Conversation = directChatID(reader.ID, person.ID)
+		}
+		people = append(people, person)
+	}
+	slices.SortFunc(people, func(a, b directoryMember) int {
+		if order := strings.Compare(a.Name, b.Name); order != 0 {
+			return order
+		}
+		return strings.Compare(a.ID, b.ID)
+	})
+	return people
+}
+
+func (s *service) groupCommand(w http.ResponseWriter, r *http.Request, member account) {
+	if s.globalRole(member) == roleMember {
+		failure(w, http.StatusForbidden, "admin_required")
+		return
+	}
+	var value channelGroup
+	if !readBody(w, r, &value) {
+		return
+	}
+	value.Name = strings.TrimSpace(value.Name)
+	action := "group.set"
+	switch r.URL.Path {
+	case "/api/v1/group/create":
+		value.ID = "group-" + strings.ToLower(randomToken(9))
+		if _, exists := s.state.Groups[value.ID]; exists {
+			failure(w, http.StatusConflict, "group_update_failed")
+			return
+		}
+	case "/api/v1/group/delete":
+		action = "group.delete"
+		fallthrough
+	default:
+		if _, exists := s.state.Groups[value.ID]; !exists {
+			failure(w, http.StatusNotFound, "group_not_found")
+			return
+		}
+	}
+	result, err := s.adminWorkspace(command{Action: action, Group: &value})
+	if err != nil {
+		failure(w, http.StatusBadRequest, "group_update_failed")
+		return
+	}
+	response(w, http.StatusOK, result)
 }
 
 func (s *service) channelCommand(w http.ResponseWriter, r *http.Request, member account) {
@@ -156,18 +245,34 @@ func (s *service) channelCommand(w http.ResponseWriter, r *http.Request, member 
 		return
 	}
 	action := "channel.set"
+	var grant string
+	global := s.globalRole(member) != roleMember
 	switch r.URL.Path {
 	case "/api/v1/channel/delete":
 		action = "channel.delete"
 	case "/api/v1/channel/create":
-		if s.globalRole(member) == roleMember {
-			failure(w, http.StatusForbidden, "admin_required")
-			return
+		if !global {
+			if !slices.ContainsFunc(s.channels(), func(room channel) bool {
+				return room.GroupID == value.GroupID && s.rules(room.ID, member.ID).Admin
+			}) {
+				failure(w, http.StatusForbidden, "admin_required")
+				return
+			}
+			grant = member.ID
 		}
 		value.ID = "voice-" + strings.ToLower(randomToken(9))
+		if _, exists := s.state.Channels[value.ID]; exists {
+			failure(w, http.StatusConflict, "channel_update_failed")
+			return
+		}
 	default:
-		if _, exists := s.state.Channels[value.ID]; !exists {
+		previous, exists := s.state.Channels[value.ID]
+		if !exists {
 			failure(w, http.StatusNotFound, "channel_not_found")
+			return
+		}
+		if !global && value.GroupID != "" && value.GroupID != previous.GroupID {
+			failure(w, http.StatusForbidden, "admin_required")
 			return
 		}
 	}
@@ -179,7 +284,7 @@ func (s *service) channelCommand(w http.ResponseWriter, r *http.Request, member 
 		value.Name = strings.TrimSpace(value.Name)
 		value.Description = strings.TrimSpace(value.Description)
 	}
-	result, err := s.adminWorkspace(command{Action: action, Channel: &value})
+	result, err := s.adminWorkspace(command{Action: action, Channel: &value, grantChannelAdmin: grant})
 	switch {
 	case errors.Is(err, errMissing):
 		failure(w, http.StatusNotFound, "channel_not_found")

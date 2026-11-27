@@ -14,6 +14,16 @@ $artifacts = if ($ArtifactDirectory) { [IO.Path]::GetFullPath($ArtifactDirectory
 $productVersion = (Get-Content -LiteralPath (Join-Path $project 'VERSION') -Raw).Trim()
 if ($productVersion -cnotmatch '^(0|[1-9][0-9]{0,4})\.(0|[1-9][0-9]{0,4})\.(0|[1-9][0-9]{0,4})$' -or
     ($productVersion.Split('.') | Where-Object { [int]$_ -gt 65535 })) { throw 'VERSION must contain a Windows-compatible major.minor.patch version.' }
+$releaseName = $productVersion
+$releaseFile = Join-Path $project 'installer/RELEASE'
+if (Test-Path -LiteralPath $releaseFile) {
+    $releaseName = (Get-Content -LiteralPath $releaseFile -Raw).Trim()
+    $version = [version]$productVersion
+    $expectedName = '{0}.{1}.{2}-fix' -f $version.Major, $version.Minor, ($version.Build - 1)
+    if ($version.Build -eq 0 -or $releaseName -cne $expectedName) {
+        throw 'installer/RELEASE must name a -fix of the preceding patch version. Remove it for a regular release.'
+    }
+}
 $publisherModulus = ''
 if ($UpdatePublicKey) {
     $publisher = Get-Content -LiteralPath $UpdatePublicKey -Raw | ConvertFrom-Json
@@ -88,9 +98,11 @@ $buildInfo = @"
 using System.Reflection;
 [assembly: AssemblyVersion("$productVersion.0")]
 [assembly: AssemblyFileVersion("$productVersion.0")]
+[assembly: AssemblyInformationalVersion("$releaseName")]
 namespace SquadVoice {
     internal static class ReleaseBuild {
         internal const string Version = "$productVersion";
+        internal const string DisplayVersion = "$releaseName";
         internal const string UpdateModulus = "$publisherModulus";
     }
 }
@@ -107,7 +119,7 @@ Copy-Item -LiteralPath (Join-Path $wv 'NOTICE.txt') -Destination (Join-Path $sta
 Write-Output ('STAGE=' + $stage)
 if ($QA -or $NoInstaller) { exit 0 }
 if (!(Test-Path -LiteralPath $nsis)) { throw 'NSIS compiler unavailable. See README.md.' }
-$installer = Join-Path $artifacts ('Squad Voice ' + $productVersion + ' x64 Setup.exe')
+$installer = Join-Path $artifacts ('Squad Voice ' + $releaseName + ' x64 Setup.exe')
 & $nsis '/INPUTCHARSET' 'UTF8' ('/DSTAGE='+$stage) ('/DSETUP='+$installer) ('/DAPP_VERSION='+$productVersion) (Join-Path $project 'installer/SquadVoice.nsi')
 if ($LASTEXITCODE -ne 0) { throw 'Installer build failed.' }
 Get-Item -LiteralPath $installer | Select-Object FullName,Length

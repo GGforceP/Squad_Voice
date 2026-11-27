@@ -64,7 +64,7 @@ func newServiceWithQuota(path string, g geoData, m *media, voiceURL string, quot
 	if err != nil {
 		return nil, err
 	}
-	chat, err := openChat(filepath.Join(filepath.Dir(path), "mediacache"), quota, s.Channels)
+	chat, err := openChat(filepath.Join(filepath.Dir(path), "mediacache"), quota, s)
 	if err != nil {
 		return nil, err
 	}
@@ -151,6 +151,8 @@ func (s *service) servePublic(w http.ResponseWriter, r *http.Request) {
 	}
 	defer s.mu.Unlock()
 	switch r.URL.Path {
+	case "/api/v1/group/create", "/api/v1/group/update", "/api/v1/group/delete":
+		s.groupCommand(w, r, member)
 	case "/api/v1/channel/create", "/api/v1/channel/update", "/api/v1/channel/delete":
 		s.channelCommand(w, r, member)
 	case "/api/v1/account/me":
