@@ -439,7 +439,8 @@ namespace SquadVoice {
                     if (name != "login.png" && name != "voice-room.png" && name != "audio-settings.png" &&
                         name != "accompaniment.png" && name != "account-settings.png" && name != "account-settings-failed.png" &&
                         name != "voice-preview.png" && name != "chat.png" && name != "cache-settings.png" && name != "cache-shortcut.png" && name != "image-preview.png" &&
-                        name != "member-actions.png" && name != "workspace-layout.png" && name != "direct-message.png" && name != "update.png") break;
+                        name != "member-actions.png" && name != "workspace-layout.png" && name != "direct-message.png" &&
+                        name != "update.png" && name != "draft-image.png") break;
                     using (var stream = File.Create(Path.Combine(store.DirectoryPath, name))) await view.CoreWebView2.CapturePreviewAsync(CoreWebView2CapturePreviewImageFormat.Png, stream);
                     return null;
 #endif

@@ -1,11 +1,11 @@
 .desktop.workspace-v6 {
   --workspace-edge: #2b3949;
   --workspace-teal: #87decf;
-  grid-template-columns: 60px 200px minmax(0, 1fr) 190px;
+  grid-template-columns: var(--rail-width) var(--channels-width) minmax(0, 1fr) var(--members-width);
   grid-template-rows: 34px minmax(0, 1fr);
   background: #121a25;
 }
-.desktop.workspace-v6.roster-closed { grid-template-columns: 60px 200px minmax(0, 1fr); }
+.desktop.workspace-v6.roster-closed { grid-template-columns: var(--rail-width) var(--channels-width) minmax(0, 1fr); }
 .workspace-v6 .workspace-caption {
   grid-column: 1 / -1;
   grid-row: 1;
@@ -30,6 +30,23 @@
 .workspace-v6 .channels { grid-column: 2; background: #182332; border-color: var(--workspace-edge); }
 .workspace-v6 .room { grid-column: 3; min-width: 0; display: flex; flex-direction: column; background: #1c2837; }
 .workspace-v6 .roster { grid-column: 4; background: #17212d; border-color: var(--workspace-edge); }
+.column-divider {
+  grid-row: 2;
+  justify-self: start;
+  position: relative;
+  z-index: 3;
+  width: 9px;
+  transform: translateX(-50%);
+  cursor: col-resize;
+  touch-action: none;
+  outline: none;
+}
+.divider-channels { grid-column: 3; }
+.divider-members { grid-column: 4; }
+.column-divider::before { content: ''; position: absolute; inset: 0 3px; border-radius: 2px; }
+.column-divider:hover::before, .column-divider:focus-visible::before, .column-divider[data-resizing]::before {
+  background: var(--workspace-teal);
+}
 .workspace-home, .group-button {
   display: grid;
   place-items: center;
@@ -68,7 +85,6 @@
 .workspace-v6 .channel.contact .avatar { width: 25px; height: 25px; border-radius: 7px; font-size: 11px; }
 .workspace-v6 .channel.contact .status-dot { margin-left: auto; width: 5px; height: 5px; }
 .workspace-v6 .user-bar { flex: none; padding: 8px 6px; background: #182332; border-top: 1px solid var(--workspace-edge); }
-.workspace-v6 .user-bar .icon-button { width: 27px; height: 29px; }
 .workspace-v6 .user-bar .avatar { width: 29px; height: 29px; border-radius: 8px; font-size: 12px; }
 .workspace-v6 .profile-name { display: flex; align-items: center; gap: 5px; min-width: 0; }
 .workspace-v6 .user-profile { padding: 3px 4px; min-width: 0; }
@@ -127,15 +143,17 @@
 .workspace-v6 .chat-pane { flex: 1; border: 0; background: #1c2837; }
 .workspace-v6 .chat-history { padding: 12px 16px 7px; }
 .workspace-v6 .chat-row {
-  width: fit-content;
-  max-width: 96%;
+  width: 100%;
   display: flex;
   align-items: flex-start;
   gap: 8px;
-  padding: 0;
-  margin: 0 0 13px;
+  padding: 5px 7px;
+  margin: 0 0 4px;
+  border: 0;
+  border-radius: 6px;
 }
-.workspace-v6 .chat-row.own { margin-left: auto; flex-direction: row-reverse; }
+.workspace-v6 .chat-row:hover, .workspace-v6 .chat-row:focus-within { background: #263649; }
+.workspace-v6 .chat-row.own { flex-direction: row-reverse; }
 .workspace-v6 .chat-row .avatar { flex: none; width: 33px; height: 33px; font-size: 13px; border-radius: 9px; }
 .chat-message { display: flex; flex-direction: column; align-items: flex-start; min-width: 0; }
 .chat-row.own .chat-message { align-items: flex-end; }
@@ -154,10 +172,45 @@
 .chat-actions .icon-button svg { width: 13px; height: 13px; }
 .chat-actions .chat-delete { margin-left: 0; }
 .workspace-v6 .chat-attachment { max-width: 100%; }
-.workspace-v6 .chat-attachment img { max-height: 190px; background: #151f2d; }
+.workspace-v6 .chat-photo img { max-height: 190px; background: #151f2d; }
 .workspace-v6 .chat-composer { border-color: var(--workspace-edge); padding: 7px 12px 10px; }
 .workspace-v6 .chat-entry { background: #15212f; border: 1px solid var(--workspace-edge); border-radius: 9px; padding: 4px; }
 .workspace-v6 .chat-entry textarea { border: 0; background: transparent; }
+.workspace-v6 .chat-file {
+  display: grid;
+  gap: 5px;
+  width: min(100%, 180px);
+  margin-bottom: 7px;
+  padding: 6px;
+  border: 1px solid var(--workspace-edge);
+  border-radius: 8px;
+  background: #15212f;
+}
+.chat-draft-thumbnail { display: block; width: 100%; height: 100px; object-fit: contain; border-radius: 5px; background: #121a25; }
+.chat-file-caption { display: flex; align-items: center; justify-content: space-between; gap: 6px; min-width: 0; }
+.chat-file-caption .icon-button { flex: none; }
+.chat-drop-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 15;
+  display: grid;
+  place-items: center;
+  pointer-events: none;
+  background: #101722d9;
+}
+.chat-drop-prompt {
+  display: grid;
+  justify-items: center;
+  gap: 8px;
+  width: min(320px, calc(100vw - 48px));
+  padding: 22px;
+  color: #dcf7f1;
+  border: 1px dashed var(--workspace-teal);
+  border-radius: 12px;
+  background: #223d47;
+}
+.chat-drop-prompt > svg { color: var(--workspace-teal); }
+.chat-drop-prompt > span { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #acbdcf; font-size: 12px; }
 .workspace-v6 .role-badge { display: inline-grid; place-items: center; width: 17px; height: 17px; padding: 0; vertical-align: middle; }
 .workspace-v6 .role-owner { color: #ff95a7; background: #593444; }
 .workspace-v6 .role-recursive { color: #ffc37f; background: #504131; }
@@ -171,13 +224,11 @@
 .photo-stage { position: relative; width: 100%; overflow: hidden; background: #101722; touch-action: none; user-select: none; cursor: zoom-in; }
 .photo-stage.is-zoomed { cursor: grab; }
 .photo-stage.is-dragging { cursor: grabbing; }
-.photo-stage img { position: absolute; top: 50%; left: 50%; max-width: none; max-height: none; }
+.photo-stage img { position: absolute; top: 50%; left: 50%; display: block; max-width: none; max-height: none; }
 .photo-zoom { position: absolute; bottom: 9px; right: 9px; color: #eef4fb; background: #142130de; padding: 4px 7px; border-radius: 6px; font-size: 11px; }
 .photo-error { position: absolute; top: 8px; inset-inline: 10px; color: #ffe1e9; background: #422736ee; padding: 5px 8px; border-radius: 6px; font-size: 12px; }
 
 @media (max-width: 900px) {
-  .desktop.workspace-v6 { grid-template-columns: 53px 178px minmax(0, 1fr) 164px; }
-  .desktop.workspace-v6.roster-closed { grid-template-columns: 53px 178px minmax(0, 1fr); }
   .workspace-v6 .chat-history { padding-inline: 10px; }
   .workspace-v6 .room-top { padding-inline: 10px; }
 }

@@ -53,6 +53,112 @@ function pickImage(image: File) {
   file.dispatchEvent(new Event('change', { bubbles: true }));
 }
 
+function previewFits(viewport: HTMLElement) {
+  const image = viewport.querySelector('img');
+  if (!image?.naturalWidth || Number(viewport.dataset.zoom) !== 1) return false;
+  const picture = image.getBoundingClientRect();
+  const windowBox = get('photo-preview')!.getBoundingClientRect();
+  const stage = viewport.getBoundingClientRect();
+  const { clientWidth, clientHeight } = document.documentElement;
+  return Math.min(windowBox.top, windowBox.left, clientWidth - windowBox.right, clientHeight - windowBox.bottom) >= 21 &&
+    Math.min(windowBox.top + clientHeight - windowBox.bottom, windowBox.left + clientWidth - windowBox.right) < 47 &&
+    Math.abs(picture.width - stage.width) < 2 && Math.abs(picture.height - stage.height) < 2 &&
+    Math.abs(picture.width / picture.height - image.naturalWidth / image.naturalHeight) < 0.02;
+}
+
+async function draftAndDropQA(image: File) {
+  const composer = document.querySelector<HTMLElement>('.chat-composer')!;
+  const compactHeight = composer.clientHeight;
+  pickImage(image);
+  await until(() => get<HTMLImageElement>('chat-draft-image')?.naturalWidth === 512);
+  if (composer.clientHeight < compactHeight + 80) throw new Error('the composer did not expand for its image thumbnail');
+  await click('chat-remove-draft');
+  await until(() => !get('chat-draft-image'));
+  const rail = document.querySelector('.rail')!;
+  const transfer = new DataTransfer();
+  transfer.items.add(image);
+  const drag = (target: Element, type: string) => target.dispatchEvent(new DragEvent(type, { dataTransfer: transfer, bubbles: true, cancelable: true }));
+  drag(rail, 'dragenter');
+  const overlay = await until(() => get('chat-drop-overlay'));
+  if (overlay.querySelectorAll('svg').length !== 1 || !overlay.textContent?.includes('松开添加图片'))
+    throw new Error('the whole-window drop hint is wrong');
+  drag(rail, 'dragleave');
+  await until(() => !get('chat-drop-overlay'));
+  const roster = document.querySelector('.roster')!;
+  drag(roster, 'dragenter');
+  await until(() => get('chat-drop-overlay'));
+  drag(roster, 'drop');
+  await until(() => !get('chat-drop-overlay') && get<HTMLImageElement>('chat-draft-image')?.naturalWidth === 512);
+  await capture('draft-image.png');
+}
+
+async function workspaceControlsQA() {
+  const rail = document.querySelector<HTMLElement>('.rail')!;
+  const channels = document.querySelector<HTMLElement>('.channels')!;
+  const room = document.querySelector<HTMLElement>('.room')!;
+  const members = document.querySelector<HTMLElement>('.roster')!;
+  const settings = get('settings-open');
+  if (settings?.parentElement !== rail || settings.previousElementSibling?.getAttribute('aria-label') !== '使用说明' ||
+      channels.querySelector('[data-testid="settings-open"],[data-testid="logout"]')) {
+    throw new Error('settings or sign-out is in the wrong column');
+  }
+  const railWidth = rail.clientWidth;
+  const originalChannels = channels.clientWidth;
+  const originalMembers = members.clientWidth;
+  const originalRoom = room.clientWidth;
+  const drag = (pane: string, delta: number) => {
+    const divider = get('resize-' + pane)!;
+    const { left, top, width } = divider.getBoundingClientRect();
+    const x = left + width / 2, y = top + 96;
+    if (document.elementFromPoint(x, y) !== divider)
+      throw new Error('the ' + pane + ' divider does not receive pointer input');
+    divider.setPointerCapture = () => {}; // The test dispatches DOM events without a system pointer.
+    for (const [type, offset] of [['pointerdown', 0], ['pointermove', delta], ['pointerup', delta]] as const) {
+      divider.dispatchEvent(new PointerEvent(type, { pointerId: 1, button: 0, clientX: x + offset, clientY: y, bubbles: true }));
+    }
+  };
+  drag('channels', 48);
+  await until(() => channels.clientWidth === originalChannels + 48, 3000).catch(() => {
+    throw new Error('the channel divider changed the width from ' + originalChannels + ' to ' + channels.clientWidth);
+  });
+  drag('members', -36);
+  await until(() => members.clientWidth === originalMembers + 36, 3000).catch(() => {
+    throw new Error('the member divider changed the width from ' + originalMembers + ' to ' + members.clientWidth);
+  });
+  if (room.clientWidth !== originalRoom - 84 || rail.clientWidth !== railWidth)
+    throw new Error('dragging a divider did not redistribute chat width');
+  drag('members', 36);
+  drag('channels', -48);
+  await until(() => channels.clientWidth === originalChannels && members.clientWidth === originalMembers);
+}
+
+async function microphoneNoticeQA() {
+  const media = navigator.mediaDevices;
+  const original = Object.getOwnPropertyDescriptor(media, 'enumerateDevices');
+  const devices = await media.enumerateDevices();
+  const microphone = devices.find(device => device.kind === 'audioinput');
+  if (!microphone) throw new Error('the desktop fixture has no synthetic input device');
+  let connected = false;
+  Object.defineProperty(media, 'enumerateDevices', { configurable: true, value: async () =>
+    connected ? devices : devices.filter(device => device.kind !== 'audioinput') });
+  const changed = () => media.dispatchEvent(new Event('devicechange'));
+  try {
+    changed();
+    await until(() => get('microphone-notice'), 5000).catch(() => { throw new Error('the missing microphone notice did not appear'); });
+    connected = true;
+    changed();
+    await until(() => !get('microphone-notice'), 5000).catch(() => { throw new Error('the missing microphone notice remained after reconnect'); });
+    connected = false;
+    changed();
+    await until(() => get('microphone-notice'), 5000).catch(() => { throw new Error('the missing microphone notice did not return after unplug'); });
+  } finally {
+    if (original) Object.defineProperty(media, 'enumerateDevices', original);
+    else Reflect.deleteProperty(media, 'enumerateDevices');
+    changed();
+  }
+  await until(() => !get('microphone-notice'), 5000).catch(() => { throw new Error('the notice did not clear after real enumeration was restored'); });
+}
+
 async function animatedImageQA() {
   const frames = Uint8Array.from(atob('R0lGODlhBQAHAIEAAP8AAAAAAAAAAAAAACH/C05FVFNDQVBFMi4wAwEBAAAh+QQADAAAACwAAAAABQAHAAAIDAABCBxIsKDBgwcDAgAh+QQBEgABACwAAAAABQAHAIEAAP8AAAAAAAAAAAAIDAABCBxIsKDBgwcDAgA7'),
     value => value.charCodeAt(0));
@@ -114,25 +220,15 @@ async function portraitPreviewQA() {
     const stage = get('photo-viewport');
     return stage?.querySelector('img')?.naturalHeight === canvas.height ? stage : null;
   });
+  await until(() => previewFits(viewport));
   const initialHeight = viewport.clientHeight;
-  const verifyFit = () => {
-    const { top, left, bottom, right } = get('photo-preview')!.getBoundingClientRect();
-    const { clientWidth, clientHeight } = document.documentElement;
-    if (Math.min(top, left, clientWidth - right, clientHeight - bottom) < 21 ||
-        Math.abs(viewport.clientWidth / viewport.clientHeight - canvas.width / canvas.height) > 0.015) {
-      throw new Error('portrait preview lost its margin or aspect ratio');
-    }
-  };
-  verifyFit();
   try {
     await call('qa.resize', { small: true });
-    await until(() => viewport.clientHeight < initialHeight - 100);
-    verifyFit();
+    await until(() => viewport.clientHeight < initialHeight - 100 && previewFits(viewport));
   } finally {
     await call('qa.resize', { small: false });
   }
-  await until(() => viewport.clientHeight === initialHeight);
-  verifyFit();
+  await until(() => viewport.clientHeight === initialHeight && previewFits(viewport));
   await click('photo-download');
   await until(() => !get<HTMLButtonElement>('photo-download')?.disabled);
   if (document.querySelector('.photo-error')) throw new Error('native image download failed');
@@ -163,7 +259,7 @@ async function chatQA(number: number) {
     appSegment.set([255, 0xed, 255, 255]);
     const oversized = new File([image.slice(0, 2), ...Array<Uint8Array<ArrayBuffer>>(81).fill(appSegment), image.slice(2)],
       'over-limit-original.jpg', { type: 'image/jpeg' });
-    pickImage(oversized);
+    await draftAndDropQA(oversized);
     fill('chat-text', '图片验证 🎮');
     await click('chat-send');
     const uploaded = await until(() => [...document.querySelectorAll<HTMLElement>('.chat-row')].find(row => row.textContent?.includes('图片验证 🎮')));
@@ -177,6 +273,7 @@ async function chatQA(number: number) {
     picture.closest('button')?.click();
     await until(() => get<HTMLDialogElement>('photo-preview')?.open && get('photo-preview')?.querySelector('img')?.naturalWidth === 512);
     const viewport = get('photo-viewport')!;
+    await until(() => previewFits(viewport) && (viewport.querySelector('img')?.clientWidth ?? 0) > 512);
     const initial = viewport.getBoundingClientRect();
     if (Math.abs(initial.width / initial.height - 512 / 288) > 0.02 || !get('photo-download'))
       throw new Error('image viewport aspect ratio or download action is wrong');
@@ -189,8 +286,20 @@ async function chatQA(number: number) {
     viewport.dispatchEvent(new PointerEvent('pointermove', { pointerId: 1, clientX: 337, clientY: 218, bubbles: true }));
     await until(() => viewport.querySelector('img')?.style.transform !== before);
     viewport.dispatchEvent(new PointerEvent('pointerup', { pointerId: 1, clientX: 337, clientY: 218, bubbles: true }));
+    const reset = await until(() => get('photo-preview')!.querySelector<HTMLButtonElement>('[aria-label="还原预览尺寸"]'));
+    reset.click();
+    await until(() => previewFits(viewport));
     await capture('image-preview.png');
     await click('photo-close');
+    const own = uploaded.getBoundingClientRect();
+    const emptyEdge = document.elementFromPoint(own.left + 14, own.top + 12);
+    if (emptyEdge !== uploaded) throw new Error('the blank side of a message is not part of the row');
+    const action = uploaded.querySelector<HTMLButtonElement>('[data-testid="chat-copy"]')!;
+    const background = getComputedStyle(uploaded).backgroundColor;
+    action.focus({ preventScroll: true });
+    if (getComputedStyle(uploaded).backgroundColor === background)
+      throw new Error('the focused message row has no highlight');
+    action.blur();
     await capture('chat.png');
     await until(() => get('chat-history')?.textContent?.includes('已收到图片'));
     uploaded.querySelector<HTMLButtonElement>('[data-testid="chat-delete"]')?.click();
@@ -340,6 +449,7 @@ async function run(input: Input) {
         await until(() => get('workspace'));
         if (document.getElementById('root')?.dataset.loginSeen) throw new Error('login page was displayed during automatic login');
         stage = 'explicit sign-out';
+        await click('settings-open');
         await click('logout');
       } else {
         stage = 'signed-out restart';
@@ -475,6 +585,10 @@ async function run(input: Input) {
       });
       if (get('chat-pane')) throw new Error('chat visible before joining');
       if (input.number === 1) {
+        stage = 'settings placement and column widths';
+        await workspaceControlsQA();
+        stage = 'hot-plugged microphone notice';
+        await microphoneNoticeQA();
         stage = 'create and edit a group';
         await click('group-create');
         await until(() => get('group-name'));

@@ -30,7 +30,7 @@ export function PhotoPreview({ url, author, id, channelId, close }: {
   const [error, setError] = useState('');
   const availableWidth = Math.max(1, viewport.width - margin * 2 - 2);
   const availableHeight = Math.max(1, viewport.height - margin * 2 - header - 2);
-  const ratio = natural ? Math.min(1, availableWidth / natural.width, availableHeight / natural.height) : 1;
+  const ratio = natural ? Math.min(availableWidth / natural.width, availableHeight / natural.height) : 1;
   const width = natural ? Math.max(1, Math.floor(natural.width * ratio)) : Math.min(300, availableWidth);
   const height = natural ? Math.max(1, Math.floor(natural.height * ratio)) : Math.min(150, availableHeight);
   const frameWidth = Math.min(availableWidth, Math.max(152, width));
