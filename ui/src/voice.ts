@@ -13,11 +13,11 @@ export type Member = { id: string; userId?: string; name: string; self: boolean;
 export type VoiceState = {
   status: 'idle' | 'joining' | 'connected' | 'reconnecting';
   channelId: string | null; members: Member[]; since: number | null;
-  mic: boolean; deafened: boolean; quality: string; error: string;
+  mic: boolean; microphoneMissing: boolean; deafened: boolean; quality: string; error: string;
   playbackBlocked: boolean; sharing: string | null; musicVolume: number; shareLevel: number; musicBusy: boolean;
 };
 const blank = (): VoiceState => ({
-  status: 'idle', channelId: null, members: [], since: null, mic: false, deafened: false, quality: 'unknown',
+  status: 'idle', channelId: null, members: [], since: null, mic: false, microphoneMissing: false, deafened: false, quality: 'unknown',
   error: '', playbackBlocked: false, sharing: null, musicVolume: 50, shareLevel: 75, musicBusy: false,
 });
 
@@ -32,6 +32,7 @@ export class VoiceEngine {
   private volume = new Map<string, number>();
   private prefs = initialPreferences;
   private wantsMic = false;
+  private microphoneAvailable: boolean | null = null;
   private ptt = false;
   private rules: RoomRules = {};
   private micQueue: Promise<void> = Promise.resolve();
@@ -57,6 +58,12 @@ export class VoiceEngine {
     this.events.forEach(fn => fn(this.state));
   }
   notice(error: string) { this.update({ error }); }
+  setMicrophoneAvailable(available: boolean) {
+    if (this.microphoneAvailable === available) return;
+    this.microphoneAvailable = available;
+    this.update({ microphoneMissing: !available });
+  }
+  dismissMicrophoneNotice() { this.update({ microphoneMissing: false }); }
 
   async join(channel: Channel) {
     if (this.state.status === 'joining' || this.state.channelId === channel.id) return;
@@ -108,7 +115,11 @@ export class VoiceEngine {
         void this.syncMic();
         refresh();
       })
-      .on(RoomEvent.MediaDevicesError, () => { if (current()) this.notice('无法使用当前音频设备，请检查 Windows 权限或改用其他设备。'); })
+      .on(RoomEvent.MediaDevicesError, (error, kind) => {
+        if (!current()) return;
+        if (kind === 'audioinput' && error.name === 'NotFoundError') this.setMicrophoneAvailable(false);
+        else this.notice('无法使用当前音频设备，请检查 Windows 权限或改用其他设备。');
+      })
       .on(RoomEvent.Disconnected, () => {
         if (!current()) return;
         void this.leave().then(() => this.notice('语音连接已断开，可以重新加入频道。'));
@@ -153,7 +164,8 @@ export class VoiceEngine {
     await this.stopShare(old);
     void call('ptt.set', { enabled: false }).catch(() => {});
     for (const sid of [...this.incoming.keys()]) this.removeTrack(sid);
-    this.update({ ...blank(), musicVolume: this.state.musicVolume, shareLevel: this.state.shareLevel });
+    this.update({ ...blank(), microphoneMissing: this.state.microphoneMissing,
+      musicVolume: this.state.musicVolume, shareLevel: this.state.shareLevel });
     if (old) await old.disconnect().catch(() => {});
     if (leaseId) void call('voice.leave', { leaseId }).catch(() => {});
   }
@@ -274,15 +286,22 @@ export class VoiceEngine {
           }
         } else await participant.setMicrophoneEnabled(allowed);
         if (this.room !== room) return;
-        if (allowed) this.appliedMicRevision = revision;
+        if (allowed) {
+          this.appliedMicRevision = revision;
+          this.setMicrophoneAvailable(true);
+        }
         if (allowed && !this.maySendMic()) await participant.setMicrophoneEnabled(false);
         this.refresh();
       } catch (error) {
         if (this.room === room) {
           this.wantsMic = false;
           this.ptt = false;
-          const noInput = error instanceof DOMException && error.name === 'NotFoundError';
-          this.notice(noInput ? '未检测到可用的麦克风，已保持静音。' : '麦克风无法打开，请检查设备或 Windows 麦克风权限。');
+          if (error instanceof DOMException && error.name === 'NotFoundError') {
+            this.microphoneAvailable = false;
+            this.update({ microphoneMissing: true });
+          } else {
+            this.notice('麦克风无法打开，请检查设备或 Windows 麦克风权限。');
+          }
           this.refresh();
         }
       }

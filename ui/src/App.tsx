@@ -10,6 +10,7 @@ import type { Account, Bootstrap, Channel, ChannelGroup, Defaults, DirectoryMemb
 import { VoiceEngine } from './voice';
 import { MicCheck } from './MicCheck';
 import { ChatPanel } from './ChatPanel';
+import { ColumnDivider, useWorkspaceColumns } from './WorkspaceColumns';
 import { CacheSettings, CacheUsageButton } from './CacheSettings';
 import { Avatar, canModerate, MemberMenu, RoleBadge, RoomRestrictions } from './ChannelControls';
 import type { AudioApp, Member, VoiceState } from './voice';
@@ -89,6 +90,7 @@ export function App() {
   const [chatError, setChatError] = useState('');
   const [musicOpen, setMusicOpen] = useState(false);
   const [roster, setRoster] = useState(true);
+  const columns = useWorkspaceColumns(roster);
   const [memberMenu, setMemberMenu] = useState<{ id: string; x: number; y: number } | null>(null);
   const dismissMemberMenu = useCallback(() => setMemberMenu(null), []);
   const [updateInfo, setUpdateInfo] = useState<UpdateState>(noUpdate);
@@ -169,13 +171,17 @@ export function App() {
     if (!isDesktop) return;
     let running = true;
     let refreshTimer = 0;
+    let latestRefresh = 0;
     const refresh = async (changed: boolean) => {
+      const request = ++latestRefresh;
       try {
-        const [value, list] = await Promise.all([
+        const [value, reported] = await Promise.all([
           call<Defaults>('devices.defaults'),
-          navigator.mediaDevices?.enumerateDevices().catch(() => []) ?? [],
+          navigator.mediaDevices?.enumerateDevices().catch(() => null) ?? null,
         ]);
-        if (!running) return;
+        if (!running || request !== latestRefresh) return;
+        const list = reported ?? [];
+        engine.setMicrophoneAvailable(reported?.some(device => device.kind === 'audioinput') ?? Boolean(value.microphone));
         setDevices(list);
         const last = previousDefaults.current;
         const preferences = { ...boot.preferences };
@@ -403,7 +409,7 @@ export function App() {
     }} />}
   </main>;
 
-  return <main className={'desktop workspace-v6 ' + (!roster ? 'roster-closed' : '')} data-testid="workspace">
+  return <main className={'desktop workspace-v6 ' + (!roster ? 'roster-closed' : '')} style={columns.style} data-testid="workspace">
     <div className="workspace-caption" aria-label="当前会话" data-testid="workspace-caption">
       {direct && peer ? <Avatar name={peer.name} /> : direct ? <MessageCircle size={13} /> : <Layers size={13} />}
       <strong>{direct ? '私信' : selectedGroup?.name ?? workspaceName}</strong>
@@ -424,6 +430,7 @@ export function App() {
       <div className="rail-spacer" />
       <CacheUsageButton open={cacheOpen} onOpen={() => setCacheOpen(true)} />
       <IconButton label="使用说明" onClick={() => setShowHelp(true)}><CircleHelp /></IconButton>
+      <IconButton label="音频设置" test="settings-open" onClick={() => setSettingsOpen(true)}><Settings /></IconButton>
     </aside>
     <aside className="channels" aria-label={direct ? '私信会话及个人资料' : '子频道及个人资料'}>
       <div className="workspace-heading"><span>{direct ? '私信' : selectedGroup?.name ?? '大频道'}</span>
@@ -480,10 +487,9 @@ export function App() {
             <span><i className="status-dot green" /> 在线</span>
           </span>
         </button>
-        <IconButton label="音频设置" test="settings-open" onClick={() => setSettingsOpen(true)}><Settings /></IconButton>
-        <IconButton label="退出登录" test="logout" onClick={() => void logout()}><LogOut /></IconButton>
       </div>
     </aside>
+    <ColumnDivider {...columns.divider('channels')} />
     <section className="room" aria-label="聊天与记录">
       <header className="room-top">
         {direct && peer ? <Avatar name={peer.name} /> : direct ? <MessageCircle className="header-icon" /> : <Hash className="header-icon" />}
@@ -499,6 +505,9 @@ export function App() {
           <UpdateButtons state={updateInfo} now={updateNow} later={updateLater} />
         </div>}
       {voice.error && <div className="status-banner" role="alert" data-testid="voice-notice"><span>{voice.error}</span><IconButton label="关闭提示" onClick={() => engine.notice('')}><X /></IconButton></div>}
+      {voice.microphoneMissing && <div className="status-banner" role="status" data-testid="microphone-notice">
+        <span>未检测到可用的麦克风，已保持静音。</span><IconButton label="关闭麦克风提示" onClick={() => engine.dismissMicrophoneNotice()}><X /></IconButton>
+      </div>}
       {voice.playbackBlocked && <div className="status-banner"><span>系统暂未开始播放队友的声音。</span><button className="button soft" onClick={() => void engine.startAudio()}>启用收听</button></div>}
       {direct && peer?.conversationId ? <ChatPanel key={peer.conversationId} channelId={peer.conversationId} conversationName={peer.name}
         selfId={account.user.id} direct admin={false} ready={chatReady} connectionError={chatError} restricted={false} roleFor={roleFor} />
@@ -514,6 +523,7 @@ export function App() {
             </button>}
           </div>}
     </section>
+    {roster && <ColumnDivider {...columns.divider('members')} />}
     {roster && <aside className="roster" aria-label={direct ? '会话成员' : '频道成员'}>
       <div className="roster-heading"><Users /><span>{direct ? '会话成员' : '频道成员'}</span>
         <span className="member-number">{selectedMembers.length + rosterDirectory.length}</span></div>
@@ -845,7 +855,7 @@ function SettingsDialog({ boot, devices, engine, save, close, logout, checkUpdat
       {draft.pushToTalk && <label className="hotkey-picker">快捷键<select value={draft.hotkey} onChange={e => update('hotkey', e.target.value as Preferences['hotkey'])}>{['F6', 'F7', 'F8', 'F9', 'F10'].map(key => <option key={key}>{key}</option>)}</select></label>}
       {error && <div className="form-error" role="alert">{error}</div>}
       <div className="modal-actions audio-settings-actions">
-        <button className="link-button" type="button" onClick={logout}><LogOut /> 退出账号</button>
+        <button className="link-button" type="button" data-testid="logout" onClick={logout}><LogOut /> 退出账号</button>
         <button className="button check-update-button" type="button" data-testid="update-open" disabled={busy} onClick={checkUpdate}><Download /> 检查更新</button>
         <button className="button primary" type="submit" data-testid="save-audio-settings" disabled={busy}>保存设置</button>
       </div>

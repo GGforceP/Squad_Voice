@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import type { FormEvent, ClipboardEvent, DragEvent } from 'react';
-import { Check, Copy, Download, ImagePlus, Send, Smile, Trash2, X } from 'lucide-react';
+import type { FormEvent, ClipboardEvent } from 'react';
+import { Check, Copy, Download, Image, ImagePlus, Send, Smile, Trash2, X } from 'lucide-react';
 import { NativeError, call, message, subscribe } from './native';
 import type { MemberRole } from './native';
 import { Avatar, RoleBadge } from './ChannelControls';
@@ -81,6 +81,8 @@ export function ChatPanel({ channelId, selfId, conversationName, direct, admin, 
   const [error, setError] = useState('');
   const [text, setText] = useState('');
   const [image, setImage] = useState<File | null>(null);
+  const [thumbnail, setThumbnail] = useState('');
+  const [dropActive, setDropActive] = useState(false);
   const [picker, setPicker] = useState(false);
   const [sending, setSending] = useState(false);
   const [compressing, setCompressing] = useState(false);
@@ -207,11 +209,17 @@ export function ChatPanel({ channelId, selfId, conversationName, direct, admin, 
     restoreScroll.current = null;
     if (restore) scroller.scrollTop = restore.top + scroller.scrollHeight - restore.height;
     else if (stickToEnd.current) scroller.scrollTop = scroller.scrollHeight;
-  }, [items, scroller]);
+  }, [items, scroller, image]);
+
+  useLayoutEffect(() => {
+    const url = image ? URL.createObjectURL(image) : '';
+    setThumbnail(url);
+    return () => { if (url) URL.revokeObjectURL(url); };
+  }, [image]);
 
   function updateText(value: string) { setText(value.slice(0, 2000)); retryKey.current = ''; }
-  function choose(file?: File) {
-    if (!file) return;
+  const choose = useCallback((file?: File) => {
+    if (!file || !canSend || sendJob.current) return;
     if (file.size > originalImageLimit || file.size === 0) { setError('请选择不超过 50 MiB 的有效图片。'); return; }
     if (file.type && !imageTypes.includes(file.type)) {
       setError('请选择 PNG、JPEG、GIF 或 WebP 图片。'); return;
@@ -219,14 +227,54 @@ export function ChatPanel({ channelId, selfId, conversationName, direct, admin, 
     setImage(file);
     retryKey.current = '';
     setError('');
-  }
+  }, [canSend]);
+
+  useEffect(() => {
+    let depth = 0;
+    setDropActive(false);
+    const files = (event: DragEvent) => event.dataTransfer?.types.includes('Files');
+    const canDrop = (transfer: DataTransfer) => canSend && !sendJob.current &&
+      (!transfer.items.length || Array.from(transfer.items).some(item => item.kind === 'file' && (!item.type || imageTypes.includes(item.type))));
+    const enter = (event: DragEvent) => {
+      if (!files(event) || !event.dataTransfer) return;
+      event.preventDefault();
+      depth++;
+      setDropActive(canDrop(event.dataTransfer));
+    };
+    const over = (event: DragEvent) => {
+      if (!files(event) || !event.dataTransfer) return;
+      event.preventDefault();
+      const allowed = canDrop(event.dataTransfer);
+      event.dataTransfer.dropEffect = allowed ? 'copy' : 'none';
+      setDropActive(allowed);
+    };
+    const leave = () => {
+      depth = Math.max(0, depth - 1);
+      if (!depth) setDropActive(false);
+    };
+    const drop = (event: DragEvent) => {
+      if (!files(event) || !event.dataTransfer) return;
+      event.preventDefault();
+      depth = 0;
+      setDropActive(false);
+      const dropped = Array.from(event.dataTransfer.files);
+      choose(dropped.find(file => !file.type || imageTypes.includes(file.type)) ?? dropped[0]);
+    };
+    window.addEventListener('dragenter', enter);
+    window.addEventListener('dragover', over);
+    window.addEventListener('dragleave', leave);
+    window.addEventListener('drop', drop);
+    return () => {
+      window.removeEventListener('dragenter', enter);
+      window.removeEventListener('dragover', over);
+      window.removeEventListener('dragleave', leave);
+      window.removeEventListener('drop', drop);
+    };
+  }, [canSend, choose]);
+
   function paste(event: ClipboardEvent<HTMLTextAreaElement>) {
     const file = [...event.clipboardData.files].find(item => item.type.startsWith('image/'));
     if (file) { event.preventDefault(); choose(file); }
-  }
-  function drop(event: DragEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (canSend && !sending) choose(event.dataTransfer.files[0]);
   }
   async function send(event: FormEvent) {
     event.preventDefault();
@@ -343,8 +391,17 @@ export function ChatPanel({ channelId, selfId, conversationName, direct, admin, 
     </div>
     {(error || (!ready && connectionError)) && <div className="chat-error" role="alert">{error || connectionError}
       {error && !loaded && <button type="button" className="link-button" onClick={() => void load()}>重试</button>}</div>}
-    <form className="chat-composer" onSubmit={send} onDragOver={event => event.preventDefault()} onDrop={drop}>
-      {image && <div className="chat-file"><span>{image.name}</span><button className="icon-button" type="button" aria-label="移除图片" disabled={sending} onClick={() => { setImage(null); retryKey.current = ''; }}><X size={15} /></button></div>}
+    {dropActive && canSend && !sending && <div className="chat-drop-overlay" data-testid="chat-drop-overlay" role="status">
+      <div className="chat-drop-prompt"><Image size={42} aria-hidden="true" /><strong>松开添加图片</strong><span>{conversationName}</span></div>
+    </div>}
+    <form className="chat-composer" onSubmit={send}>
+      {image && <div className="chat-file">
+        {thumbnail && <img className="chat-draft-thumbnail" src={thumbnail} alt={image.name} decoding="async" data-testid="chat-draft-image" />}
+        <div className="chat-file-caption"><span title={image.name}>{image.name}</span>
+          <button className="icon-button" type="button" aria-label="移除图片" data-testid="chat-remove-draft" disabled={sending}
+            onClick={() => { setImage(null); retryKey.current = ''; }}><X size={15} /></button>
+        </div>
+      </div>}
       {picker && canSend && <div className="emoji-picker" role="group" aria-label="选择表情">{emoji.map(value =>
         <button key={value} type="button" onClick={() => addEmoji(value)}>{value}</button>)}</div>}
       <input hidden ref={filePicker} type="file" accept="image/png,image/jpeg,image/gif,image/webp" data-testid="chat-file"
