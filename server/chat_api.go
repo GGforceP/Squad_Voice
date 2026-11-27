@@ -67,9 +67,9 @@ func (s *service) chatWatch(w http.ResponseWriter, r *http.Request, key tokenKey
 		out, err = s.chat.updates(req.Epoch, req.Cursor)
 	}
 	s.mu.Lock()
-	_, _, ok = s.authenticated(key)
-	// Invalidation events reach all clients. New-message notices are scoped
-	// to the recipient's current voice channel and carry no message bodies.
+	_, recipient, ok := s.authenticated(key)
+	// Public channel invalidation remains global, but every event about a
+	// private conversation is visible only to its two participants.
 	var channel string
 	for _, lease := range s.leases {
 		if lease.Session == key && lease.Cancel != nil {
@@ -87,6 +87,10 @@ func (s *service) chatWatch(w http.ResponseWriter, r *http.Request, key tokenKey
 		return
 	}
 	out.Events = slices.DeleteFunc(out.Events, func(event chatEvent) bool {
+		if strings.HasPrefix(event.Channel, directPrefix) {
+			a, b, valid := directParticipants(event.Channel)
+			return !valid || recipient.ID != a && recipient.ID != b
+		}
 		return event.Op == "message" && event.Channel != channel
 	})
 	response(w, http.StatusOK, out)
@@ -157,11 +161,11 @@ func (s *service) serveChat(w http.ResponseWriter, r *http.Request, key tokenKey
 	var mime string
 	if r.URL.Path == "/api/v1/chat/upload" {
 		req.Channel = r.URL.Query().Get("channel")
-		access, ok := s.connectedRoom(w, r, key, req.Channel, false)
+		member, ok := s.chatAccount(w, r, key, req.Channel)
 		if !ok {
 			return
 		}
-		if s.rules(req.Channel, access.account.ID).Chat != 0 {
+		if s.rules(req.Channel, member.ID).Chat != 0 {
 			s.mu.Unlock()
 			failure(w, http.StatusForbidden, "chat_restricted")
 			return
@@ -182,12 +186,11 @@ func (s *service) serveChat(w http.ResponseWriter, r *http.Request, key tokenKey
 	} else if !readBody(w, r, &req) {
 		return
 	}
-	access, ok := s.connectedRoom(w, r, key, req.Channel, false)
+	member, ok := s.chatAccount(w, r, key, req.Channel)
 	if !ok {
 		return
 	}
 	defer s.mu.Unlock()
-	member := access.account
 	switch r.URL.Path {
 	case "/api/v1/chat/history":
 		if req.Limit < 1 || req.Limit > 30 || req.After != 0 && req.Before != 0 {
@@ -224,7 +227,7 @@ func (s *service) serveChat(w http.ResponseWriter, r *http.Request, key tokenKey
 			response(w, http.StatusOK, item)
 		}
 	case "/api/v1/chat/delete":
-		if s.channelRole(member, req.Channel) == roleMember {
+		if !channelID.MatchString(req.Channel) || s.channelRole(member, req.Channel) == roleMember {
 			failure(w, http.StatusForbidden, "admin_required")
 			return
 		}

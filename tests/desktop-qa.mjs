@@ -205,6 +205,11 @@ try {
     const report = await wait(async () => JSON.parse(await readFile(join(client.directory, 'qa-result.json'), 'utf8')), 65000);
     receipts[index] = { client: index + 1, ...report };
   }));
+  if (backend && receipts[0].chatVerified) {
+    const saved = await readFile(join(five[0].directory, 'downloaded-chat-image.png'));
+    if (saved.toString('ascii', 1, 4) !== 'PNG' || saved.readUInt32BE(16) !== 512 || saved.readUInt32BE(20) !== 1440)
+      throw new Error('Downloaded image is not the original portrait PNG.');
+  }
   const secured = await Promise.all(five.map(async (client, index) => {
     const content = await readFile(join(client.directory,'connection.dpapi'));
     const known = [endpoint, accounts[index].username, accounts[index].password, apiKey, secret];

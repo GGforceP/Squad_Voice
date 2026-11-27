@@ -20,14 +20,17 @@ export type Bootstrap = {
   devices: Defaults; preferences: Preferences; accompanimentSupported: boolean;
   account?: Account | null; remembered?: RememberedLogin | null; loginError?: string | null;
 };
-export type Channel = { id: string; name: string; description: string; capacity: number };
+export type ChannelGroup = { id: string; name: string };
+export type Channel = { id: string; groupId?: string; name: string; description: string; capacity: number };
 export type MemberRole = 'owner' | 'recursive' | 'channel' | 'member';
 export type RoomRules = { channelAdmin?: boolean; listenUntil?: number; micUntil?: number; chatUntil?: number };
 export type MemberAction = 'listen' | 'mic' | 'chat' | 'channel-admin' | 'recursive-admin';
 export type Identity = { id: string; name: string; username: string; bio: string; admin?: boolean; role?: MemberRole };
 export type Account = { user: Identity; workspace: { name: string; channels: Channel[] } };
-export type Presence = { id: string; name: string; mic: boolean; music: boolean; role?: MemberRole; rules?: RoomRules };
-export type Workspace = { name: string; admin: boolean; role?: MemberRole; managedChannels?: string[]; channels: Channel[]; presence: Record<string, Presence[]>; presenceUnavailable: string[] };
+export type Presence = { id: string; userId?: string; name: string; mic: boolean; music: boolean; role?: MemberRole; rules?: RoomRules };
+export type DirectoryMember = { id: string; name: string; role: MemberRole; online: boolean; managedChannels?: string[]; conversationId?: string };
+export type Workspace = { name: string; admin: boolean; role?: MemberRole; managedChannels?: string[]; channels: Channel[];
+  groups?: ChannelGroup[]; people?: DirectoryMember[]; presence: Record<string, Presence[]>; presenceUnavailable: string[] };
 export type VoiceTicket = { serverUrl: string; accessToken: string; leaseId: string; rules?: RoomRules };
 export type UpdateState = { status: 'none' | 'disabled' | 'current' | 'available' | 'downloading' | 'ready' | 'error'; version: string; required: boolean; choice: 'none' | 'now' | 'later' };
 
@@ -60,7 +63,7 @@ export function call<T = unknown>(command: string, args: Record<string, unknown>
   const id = String(++sequence);
   return new Promise<T>((resolve, reject) => {
     const cleanup = () => { window.clearTimeout(timer); pending.delete(id); };
-    const timeout = ['chat.send', 'chat.image', 'cache.apply', 'cache.usage'].includes(command) ? 220000 : 16000;
+    const timeout = ['chat.send', 'chat.image', 'chat.download', 'cache.apply', 'cache.usage'].includes(command) ? 220000 : 16000;
     const timer = window.setTimeout(() => { cleanup(); reject(new Error('请求超时，请重试。')); }, timeout);
     pending.set(id, {
       done(value) { cleanup(); resolve(value as T); },

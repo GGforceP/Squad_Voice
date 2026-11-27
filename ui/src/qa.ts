@@ -1,5 +1,6 @@
 import { call, NativeError, subscribe } from './native';
 import type { Workspace } from './native';
+import { prepareChatImage } from './imageUpload';
 
 type UpdateMode = 'optional-update' | 'forced-update' | 'immediate-update' | 'required-exit' | 'update-reopened';
 type Input = { number: number; mode: 'normal' | 'full' | 'config' | 'persist' | 'resume' | 'signed-out' | UpdateMode; endpoint: string; username: string; password: string; expectMusic: boolean; accountEndpoints?: boolean; releaseVersion: string };
@@ -44,14 +45,112 @@ async function expectForbidden(operation: () => Promise<unknown>, code: string) 
   throw new Error('request unexpectedly succeeded');
 }
 
+function pickImage(image: File) {
+  const file = get<HTMLInputElement>('chat-file')!;
+  const transfer = new DataTransfer();
+  transfer.items.add(image);
+  file.files = transfer.files;
+  file.dispatchEvent(new Event('change', { bubbles: true }));
+}
+
+async function animatedImageQA() {
+  const frames = Uint8Array.from(atob('R0lGODlhBQAHAIEAAP8AAAAAAAAAAAAAACH/C05FVFNDQVBFMi4wAwEBAAAh+QQADAAAACwAAAAABQAHAAAIDAABCBxIsKDBgwcDAgAh+QQBEgABACwAAAAABQAHAIEAAP8AAAAAAAAAAAAIDAABCBxIsKDBgwcDAgA7'),
+    value => value.charCodeAt(0));
+  const blocks = 20500;
+  const comment = new Uint8Array(256 * blocks + 3);
+  comment.set([0x21, 0xfe]);
+  for (let offset = 2; offset < comment.length - 1; offset += 256) comment[offset] = 255;
+  const original = new File([frames.subarray(0, -1), comment, frames.subarray(-1)], 'animated.gif', { type: 'image/gif' });
+  const encoded = await prepareChatImage(original, new AbortController().signal);
+  const Decoder = (window as Window & { ImageDecoder: new(options: { data: ArrayBuffer; type: string }) => {
+    tracks: { ready: Promise<void>; selectedTrack: { frameCount: number; repetitionCount: number } };
+    decode(options: { frameIndex: number }): Promise<{ image: VideoFrame }>;
+    close(): void;
+  } }).ImageDecoder;
+  const decoder = new Decoder({ data: await encoded.arrayBuffer(), type: encoded.type });
+  try {
+    await decoder.tracks.ready;
+    if (encoded.type !== 'image/webp' || decoder.tracks.selectedTrack.frameCount !== 2 ||
+        decoder.tracks.selectedTrack.repetitionCount !== 1) throw new Error('animation did not retain frames and loop count');
+    const rendered = await decoder.decode({ frameIndex: 1 });
+    const duration = rendered.image.duration;
+    rendered.image.close();
+    if (duration !== 180000) throw new Error('animation frame duration changed');
+  } finally { decoder.close(); }
+  pickImage(encoded);
+  fill('chat-text', '动图验证');
+  await click('chat-send');
+  const row = await until(() => [...document.querySelectorAll<HTMLElement>('.chat-row')].find(line => line.textContent?.includes('动图验证')));
+  await until(() => row.querySelector<HTMLImageElement>('img')?.naturalWidth === 5);
+  row.querySelector<HTMLButtonElement>('[data-testid="chat-delete"]')?.click();
+  await click('confirm-message-delete');
+  await until(() => !get('chat-history')?.textContent?.includes('动图验证'));
+}
+
+async function portraitPreviewQA() {
+  const canvas = document.createElement('canvas');
+  canvas.width = 512;
+  canvas.height = 1440;
+  const painter = canvas.getContext('2d')!;
+  painter.fillStyle = '#25796f';
+  painter.fillRect(32, 32, 448, 1376);
+  const portrait = await new Promise<Blob>(resolve => canvas.toBlob(blob => resolve(blob!), 'image/png'));
+  pickImage(new File([portrait], 'portrait.png', { type: 'image/png' }));
+  fill('chat-text', '竖图尺寸验证');
+  await click('chat-send');
+  const row = await until(() => [...document.querySelectorAll<HTMLElement>('.chat-row')].find(line => line.textContent?.includes('竖图尺寸验证')));
+  const picture = await until(() => {
+    const image = row.querySelector('img');
+    return image?.naturalHeight === canvas.height ? image : null;
+  });
+  const image = await call<{ data: string }>('chat.image', { channelId: 'voice-lobby', id: Number(row.dataset.messageId) });
+  const received = atob(image.data);
+  const original = new Uint8Array(await portrait.arrayBuffer());
+  if (received.length !== original.length || !original.every((byte, index) => byte === received.charCodeAt(index))) {
+    throw new Error('the image under the upload limit changed');
+  }
+  picture.closest('button')?.click();
+  const viewport = await until(() => {
+    const stage = get('photo-viewport');
+    return stage?.querySelector('img')?.naturalHeight === canvas.height ? stage : null;
+  });
+  const initialHeight = viewport.clientHeight;
+  const verifyFit = () => {
+    const { top, left, bottom, right } = get('photo-preview')!.getBoundingClientRect();
+    const { clientWidth, clientHeight } = document.documentElement;
+    if (Math.min(top, left, clientWidth - right, clientHeight - bottom) < 21 ||
+        Math.abs(viewport.clientWidth / viewport.clientHeight - canvas.width / canvas.height) > 0.015) {
+      throw new Error('portrait preview lost its margin or aspect ratio');
+    }
+  };
+  verifyFit();
+  try {
+    await call('qa.resize', { small: true });
+    await until(() => viewport.clientHeight < initialHeight - 100);
+    verifyFit();
+  } finally {
+    await call('qa.resize', { small: false });
+  }
+  await until(() => viewport.clientHeight === initialHeight);
+  verifyFit();
+  await click('photo-download');
+  await until(() => !get<HTMLButtonElement>('photo-download')?.disabled);
+  if (document.querySelector('.photo-error')) throw new Error('native image download failed');
+  await click('photo-close');
+  row.querySelector<HTMLButtonElement>('[data-testid="chat-delete"]')?.click();
+  await click('confirm-message-delete');
+  await until(() => !get('chat-history')?.textContent?.includes('竖图尺寸验证'));
+}
+
 async function chatQA(number: number) {
   if (number === 1) {
-    await until(() => get('chat-history')?.textContent?.includes('历史消息 14'));
+    await until(() => get('chat-history')?.textContent?.includes('历史消息 24'));
     if (get('chat-history')?.textContent?.includes('历史消息 01')) throw new Error('initial history was not paged');
     const history = get('chat-history')!;
+    const initialCount = history.querySelectorAll('[data-testid="chat-row"]').length;
     history.scrollTop = 0;
     history.dispatchEvent(new WheelEvent('wheel', { deltaY: -80, bubbles: true }));
-    await until(() => (get('chat-history')?.querySelectorAll('[data-testid="chat-row"]').length ?? 0) > 5);
+    await until(() => history.querySelectorAll('[data-testid="chat-row"]').length > initialCount);
     const canvas = document.createElement('canvas');
     canvas.width = 512; canvas.height = 288;
     const painter = canvas.getContext('2d')!;
@@ -59,12 +158,12 @@ async function chatQA(number: number) {
     painter.fillStyle = '#fff'; painter.font = 'bold 36px Segoe UI'; painter.textAlign = 'center';
     painter.fillText('Squad Voice', 256, 138);
     painter.font = '20px Segoe UI'; painter.fillText('频道图片验证', 256, 180);
-    const image = await new Promise<Blob>(resolve => canvas.toBlob(blob => resolve(blob!)));
-    const file = get<HTMLInputElement>('chat-file')!;
-    const transfer = new DataTransfer();
-    transfer.items.add(new File([image], 'squad-voice.png', { type: 'image/png' }));
-    file.files = transfer.files;
-    file.dispatchEvent(new Event('change', { bubbles: true }));
+    const image = await new Promise<Blob>(resolve => canvas.toBlob(blob => resolve(blob!), 'image/jpeg', 0.95));
+    const appSegment = new Uint8Array(65537);
+    appSegment.set([255, 0xed, 255, 255]);
+    const oversized = new File([image.slice(0, 2), ...Array<Uint8Array<ArrayBuffer>>(81).fill(appSegment), image.slice(2)],
+      'over-limit-original.jpg', { type: 'image/jpeg' });
+    pickImage(oversized);
     fill('chat-text', '图片验证 🎮');
     await click('chat-send');
     const uploaded = await until(() => [...document.querySelectorAll<HTMLElement>('.chat-row')].find(row => row.textContent?.includes('图片验证 🎮')));
@@ -72,8 +171,24 @@ async function chatQA(number: number) {
       const image = uploaded.querySelector<HTMLImageElement>('img');
       return image?.naturalWidth === 512 ? image : null;
     });
-    picture.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+    if (!picture.src.startsWith('blob:') || !uploaded.classList.contains('own') || !uploaded.querySelector('[data-testid="chat-copy"]')) {
+      throw new Error('self message layout or copy action is missing');
+    }
+    picture.closest('button')?.click();
     await until(() => get<HTMLDialogElement>('photo-preview')?.open && get('photo-preview')?.querySelector('img')?.naturalWidth === 512);
+    const viewport = get('photo-viewport')!;
+    const initial = viewport.getBoundingClientRect();
+    if (Math.abs(initial.width / initial.height - 512 / 288) > 0.02 || !get('photo-download'))
+      throw new Error('image viewport aspect ratio or download action is wrong');
+    viewport.dispatchEvent(new WheelEvent('wheel', { deltaY: -430, clientX: initial.left + initial.width / 2,
+      clientY: initial.top + initial.height / 2, bubbles: true, cancelable: true }));
+    await until(() => Number(viewport.dataset.zoom) > 1.5);
+    const before = viewport.querySelector('img')?.style.transform;
+    viewport.setPointerCapture = () => {}; // Synthetic pointer events have no system pointer capture.
+    viewport.dispatchEvent(new PointerEvent('pointerdown', { pointerId: 1, button: 0, clientX: 300, clientY: 200, bubbles: true }));
+    viewport.dispatchEvent(new PointerEvent('pointermove', { pointerId: 1, clientX: 337, clientY: 218, bubbles: true }));
+    await until(() => viewport.querySelector('img')?.style.transform !== before);
+    viewport.dispatchEvent(new PointerEvent('pointerup', { pointerId: 1, clientX: 337, clientY: 218, bubbles: true }));
     await capture('image-preview.png');
     await click('photo-close');
     await capture('chat.png');
@@ -81,6 +196,8 @@ async function chatQA(number: number) {
     uploaded.querySelector<HTMLButtonElement>('[data-testid="chat-delete"]')?.click();
     await click('confirm-message-delete');
     await until(() => !get('chat-history')?.textContent?.includes('图片验证 🎮'));
+    await animatedImageQA();
+    await portraitPreviewQA();
     const cacheShortcut = await until(() => get<HTMLButtonElement>('cache-open'));
     const help = cacheShortcut.closest('.rail')?.querySelector('[aria-label="使用说明"]')?.getBoundingClientRect();
     const shortcutBounds = cacheShortcut.getBoundingClientRect();
@@ -103,6 +220,11 @@ async function chatQA(number: number) {
     const photographed = await until(() => [...document.querySelectorAll<HTMLElement>('.chat-row')].find(row => row.textContent?.includes('图片验证 🎮')));
     await until(() => photographed.querySelector<HTMLImageElement>('img')?.naturalWidth === 512);
     const id = Number(photographed.dataset.messageId);
+    const page = await call<{ messages: Array<{ id: number; image?: string; imageSize?: number }> }>(
+      'chat.history', { channelId: 'voice-lobby', limit: 10 });
+    const media = page.messages.find(row => row.id === id);
+    if (media?.image !== 'image/jpeg' || !media.imageSize || media.imageSize > 5 * 1024 * 1024 || photographed.classList.contains('own'))
+      throw new Error('compressed image type, size or incoming message alignment is wrong');
     await expectForbidden(() => call('chat.delete', { channelId: 'voice-lobby', id }), 'admin_required');
     fill('chat-text', '已收到图片');
     await click('chat-send');
@@ -110,19 +232,32 @@ async function chatQA(number: number) {
   }
 }
 
+async function privateChatQA(number: number) {
+  const otherName = number === 1 ? '阿澈' : '星野';
+  const member = await until(async () => (await call<Workspace>('workspace.state')).people?.find(person => person.name === otherName));
+  await click('dm-home');
+  await click('contact-' + member.id);
+  await until(() => get('workspace-caption')?.textContent?.includes(otherName));
+  if (get('workspace-caption')?.textContent?.includes(number === 1 ? '星野' : '阿澈')) throw new Error('private caption displays the local user');
+  if (number === 2) await until(() => get('chat-history')?.textContent?.includes('私信实装验证'));
+  fill('chat-text', number === 1 ? '私信实装验证' : '私信已收到');
+  await click('chat-send');
+  await until(() => get('chat-history')?.textContent?.includes('私信已收到'));
+  if (number === 1) await capture('direct-message.png');
+  await click('group-default');
+  await until(() => get('workspace-caption')?.textContent?.includes('开黑大厅') && get('chat-history') &&
+    !get('chat-history')?.textContent?.includes('私信实装验证'));
+  if ((await stats()).status !== 'connected') throw new Error('switching to private messages disconnected voice');
+}
+
 async function moderateQA(number: number) {
   const lobby = 'voice-lobby';
   const controlSelf = (action: string) => call('member.control', { channelId: lobby, targetId: '', action, enabled: false });
   if (number === 1) {
     await until(() => get('roster-self')?.querySelector('[data-testid="role-owner"]'));
-    if (document.querySelector('.channels .channel-member, .channels .user-profile')) throw new Error('members still duplicated on the left');
-    const split = get('room-split')!;
-    const before = split.getBoundingClientRect().top;
-    split.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }));
-    await until(() => split.getBoundingClientRect().top < before - 8);
-    const saved = await call<{ preferences: { voiceShare: number } }>('app.bootstrap');
-    if (saved.preferences.voiceShare !== 62) throw new Error('new split ratio was not persisted');
-    await capture('split-layout.png');
+    if (!document.querySelector('.channels .user-profile') || document.querySelector('.roster .user-profile, .room .stage'))
+      throw new Error('four-column workspace placement is wrong');
+    await capture('workspace-layout.png');
 
     const peer = (name: string) => [...document.querySelectorAll<HTMLElement>('[data-testid="roster-peer"]')].find(row => row.textContent?.includes(name));
     async function action(name: string, action: string) {
@@ -340,6 +475,16 @@ async function run(input: Input) {
       });
       if (get('chat-pane')) throw new Error('chat visible before joining');
       if (input.number === 1) {
+        stage = 'create and edit a group';
+        await click('group-create');
+        await until(() => get('group-name'));
+        fill('group-name', '联调大频道');
+        await click('group-save');
+        await until(() => get('workspace-caption')?.textContent?.includes('联调大频道'));
+        await click('group-edit');
+        fill('group-name', '联调大频道已编辑');
+        await click('group-save');
+        await until(() => get('workspace-caption')?.textContent?.includes('联调大频道已编辑'));
         stage = 'create a voice channel';
         await click('channel-create');
         await until(() => get('channel-name'));
@@ -347,6 +492,9 @@ async function run(input: Input) {
         await click('channel-save');
         await until(() => !get('channel-name'));
         const created = await until(async () => (await call<Workspace>('workspace.state')).channels.find(channel => channel.name === '联调语音室'));
+        await until(() => get('channel-' + created.id));
+        if (!get('room-count')?.textContent?.includes('0 /') || document.querySelector('.roster-directory-member') || get('roster-peer'))
+          throw new Error('the empty channel shows workspace members from outside the selected channel');
         stage = 'edit a voice channel';
         await click('channel-edit-' + created.id);
         await until(() => get('channel-name'));
@@ -360,8 +508,15 @@ async function run(input: Input) {
         await until(() => get('channel-delete')?.textContent === '确认删除');
         await click('channel-delete');
         await until(() => !get('channel-' + created.id));
+        stage = 'delete a group';
+        await click('group-edit');
+        await click('group-delete');
+        await until(() => get('group-delete')?.textContent === '确认删除');
+        await click('group-delete');
+        await until(() => !get('group-name'));
+        await click('group-default');
         stage = 'server-driven voice preview';
-        await until(() => get('voice-preview')?.querySelector('[data-testid="peer-tile"]'));
+        await until(() => get('roster-peer'));
         if (get('chat-pane')) throw new Error('chat visible during voice preview');
         await capture('voice-preview.png');
       } else if (input.number === 2) {
@@ -397,7 +552,7 @@ async function run(input: Input) {
       await call('qa.report', { ok: true, roomFull: Boolean(warning), passwordChanged: Boolean(input.accountEndpoints), users: (await stats()).users });
       return;
     }
-    await until(() => get('voice-stage'));
+    await until(() => get('roster-self'));
     const initialMicrophone = await until(async () => {
       const report = await stats();
       const mic = report.microphone;
@@ -416,6 +571,8 @@ async function run(input: Input) {
     if (input.accountEndpoints && input.number <= 2) {
       stage = 'chat history image and deletion';
       await chatQA(input.number);
+      stage = 'private conversations';
+      await privateChatQA(input.number);
       stage = 'member role and moderation controls';
       await moderateQA(input.number);
     }

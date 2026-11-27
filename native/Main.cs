@@ -353,6 +353,9 @@ namespace SquadVoice {
                     BeginInvoke(new Action(async () => await InstallImmediately()));
                     return null;
                 case "update.later": return updates.InstallLater();
+                case "group.create": return await api.Feature("group/create", ReadGroup(args), CancellationToken.None);
+                case "group.update": return await api.Feature("group/update", ReadGroup(args), CancellationToken.None);
+                case "group.delete": return await api.Feature("group/delete", new { id = Json.Text(args, "id", 48) }, CancellationToken.None);
                 case "channel.create": return await api.Feature("channel/create", ReadChannel(args), CancellationToken.None);
                 case "channel.update": return await api.Feature("channel/update", ReadChannel(args), CancellationToken.None);
                 case "channel.delete": return await api.Feature("channel/delete", new { id = Json.Text(args, "id", 48) }, CancellationToken.None);
@@ -360,6 +363,13 @@ namespace SquadVoice {
                 case "chat.history": return await chat.History(args);
                 case "chat.send": return await chat.Send(args);
                 case "chat.image": return await chat.Image(args);
+                case "chat.download": return await SaveChatImage(args);
+                case "chat.copy":
+                    var text = Json.Text(args, "text", 2000);
+                    if (text.Length == 0) return false;
+                    try { Clipboard.SetText(text); }
+                    catch (ExternalException) { throw new FriendlyError("剪贴板正在使用，请稍后重试。"); }
+                    return true;
                 case "chat.delete": return await chat.Delete(args);
                 case "cache.usage": return await cache.Run(cache.Usage);
                 case "cache.pick":
@@ -419,13 +429,17 @@ namespace SquadVoice {
                     if (!lab) break;
                     WriteLabResult(args);
                     return null;
+                case "qa.resize":
+                    if (!lab) break;
+                    ClientSize = Json.Bool(args, "small") ? new Size(870, 580) : new Size(1180, 750);
+                    return null;
                 case "qa.capture":
                     if (!lab) break;
                     var name = Json.Text(args, "name", 32);
                     if (name != "login.png" && name != "voice-room.png" && name != "audio-settings.png" &&
                         name != "accompaniment.png" && name != "account-settings.png" && name != "account-settings-failed.png" &&
                         name != "voice-preview.png" && name != "chat.png" && name != "cache-settings.png" && name != "cache-shortcut.png" && name != "image-preview.png" &&
-                        name != "member-actions.png" && name != "split-layout.png" && name != "update.png") break;
+                        name != "member-actions.png" && name != "workspace-layout.png" && name != "direct-message.png" && name != "update.png") break;
                     using (var stream = File.Create(Path.Combine(store.DirectoryPath, name))) await view.CoreWebView2.CapturePreviewAsync(CoreWebView2CapturePreviewImageFormat.Png, stream);
                     return null;
 #endif
@@ -509,12 +523,49 @@ namespace SquadVoice {
         }
 
         private static object ReadChannel(Dictionary<string, object> args) {
-            return new {
-                id = Json.Text(args, "id", 48),
-                name = Json.Text(args, "name", 64),
-                description = Json.Text(args, "description", 180),
-                capacity = ChatCache.Number(Json.Value(args, "capacity"))
+            var value = new Dictionary<string, object> {
+                { "id", Json.Text(args, "id", 48) },
+                { "name", Json.Text(args, "name", 64) },
+                { "description", Json.Text(args, "description", 180) },
+                { "capacity", ChatCache.Number(Json.Value(args, "capacity")) }
             };
+            var group = Json.Text(args, "groupId", 48);
+            if (group.Length != 0) value.Add("groupId", group);
+            return value;
+        }
+
+        private static object ReadGroup(Dictionary<string, object> args) {
+            return new { id = Json.Text(args, "id", 48), name = Json.Text(args, "name", 64) };
+        }
+
+        private async Task<bool> SaveChatImage(Dictionary<string, object> args) {
+            var bytes = await chat.ImageBytes(args);
+            string extension, filter;
+            if (bytes.Length >= 8 && bytes[0] == 137 && Encoding.ASCII.GetString(bytes, 1, 3) == "PNG") {
+                extension = "png"; filter = "PNG 图片";
+            } else if (bytes.Length >= 3 && bytes[0] == 255 && bytes[1] == 216 && bytes[2] == 255) {
+                extension = "jpg"; filter = "JPEG 图片";
+            } else if (bytes.Length >= 6 && Encoding.ASCII.GetString(bytes, 0, 3) == "GIF") {
+                extension = "gif"; filter = "GIF 图片";
+            } else if (bytes.Length >= 12 && Encoding.ASCII.GetString(bytes, 0, 4) == "RIFF" &&
+                       Encoding.ASCII.GetString(bytes, 8, 4) == "WEBP") {
+                extension = "webp"; filter = "WebP 图片";
+            } else throw new FriendlyError("图片格式无法识别。");
+            string destination;
+#if QA
+            if (lab) destination = Path.Combine(store.DirectoryPath, "downloaded-chat-image." + extension);
+            else
+#endif
+            using (var dialog = new SaveFileDialog { DefaultExt = extension, AddExtension = true, OverwritePrompt = true,
+                Title = "保存聊天图片", Filter = filter + "|*." + extension,
+                FileName = "SquadVoice-" + ChatCache.Number(Json.Value(args, "id")) + "." + extension }) {
+                if (dialog.ShowDialog(this) != DialogResult.OK) return false;
+                destination = dialog.FileName;
+            }
+            try { await Task.Run(() => ProfileStore.WriteAtomic(destination, bytes)); }
+            catch (IOException) { throw new FriendlyError("无法保存图片，请选择其他位置。"); }
+            catch (UnauthorizedAccessException) { throw new FriendlyError("无法写入所选位置。"); }
+            return true;
         }
 
         private async Task<object> StartCapture(int pid) {

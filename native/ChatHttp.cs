@@ -48,7 +48,8 @@ namespace SquadVoice {
                 if (!Json.IsId(id) || name.Length == 0 || !channels.Add(id)) continue;
                 var rawCapacity = Json.Value(channel, "capacity");
                 int capacity = rawCapacity is int ? Math.Max(1, Math.Min(5, (int)rawCapacity)) : 5;
-                result.Add(new { id = id, name = name, description = Json.Text(channel, "description", 180), capacity = capacity });
+                result.Add(new { id = id, groupId = Json.Text(channel, "groupId", 48),
+                    name = name, description = Json.Text(channel, "description", 180), capacity = capacity });
                 if (result.Count >= 30) break;
             }
             return result;
@@ -121,6 +122,9 @@ namespace SquadVoice {
                     case "admin_required": throw new FriendlyError("此操作需要管理员权限。", code);
                     case "channel_update_failed": throw new FriendlyError("频道保存失败，请检查名称、描述和人数上限。", code);
                     case "channel_not_found": throw new FriendlyError("该频道已不存在。", code);
+                    case "group_update_failed": throw new FriendlyError("大频道保存失败，请检查名称。", code);
+                    case "group_not_found": throw new FriendlyError("该大频道已不存在。", code);
+                    case "conversation_unavailable": throw new FriendlyError("该私信会话已不可用。", code);
                     case "join_voice_for_chat": throw new FriendlyError("加入该语音频道后即可使用聊天。", code);
                     case "member_not_in_room": throw new FriendlyError("这位成员已离开频道。", code);
                     case "restriction_locked": throw new FriendlyError("管理员限制须满 60 秒才能自行解除。", code);

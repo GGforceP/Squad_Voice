@@ -21,13 +21,15 @@ import (
 )
 
 type command struct {
-	Action      string   `json:"action"`
-	Username    string   `json:"username,omitempty"`
-	NewUsername string   `json:"newUsername,omitempty"`
-	Name        *string  `json:"name,omitempty"`
-	Bio         *string  `json:"bio,omitempty"`
-	Password    string   `json:"password,omitempty"`
-	Channel     *channel `json:"channel,omitempty"`
+	Action            string        `json:"action"`
+	Username          string        `json:"username,omitempty"`
+	NewUsername       string        `json:"newUsername,omitempty"`
+	Name              *string       `json:"name,omitempty"`
+	Bio               *string       `json:"bio,omitempty"`
+	Password          string        `json:"password,omitempty"`
+	Channel           *channel      `json:"channel,omitempty"`
+	Group             *channelGroup `json:"group,omitempty"`
+	grantChannelAdmin string
 }
 
 func (s *service) serveAdmin(w http.ResponseWriter, r *http.Request) {
@@ -53,7 +55,7 @@ func (s *service) admin(cmd command) (any, error) {
 	switch cmd.Action {
 	case "status":
 		return map[string]any{
-			"workspace": s.state.Workspace, "accounts": len(s.state.Accounts), "channels": s.channels(),
+			"workspace": s.state.Workspace, "accounts": len(s.state.Accounts), "channels": s.channels(), "groups": s.groups(),
 			"activeSessions": len(s.sessions), "voiceSlots": len(s.leases), "voiceCapacity": capacity,
 			"regionDataset": s.geo.Month, "ipv4Ranges": len(s.geo.V4), "ipv6Ranges": len(s.geo.V6),
 			"ownerConfigured": s.ownerName != "", "ownerAssigned": s.ownerName != "" && s.state.Accounts[s.ownerName].Enabled,
@@ -70,7 +72,7 @@ func (s *service) admin(cmd command) (any, error) {
 		}
 		slices.SortFunc(list, func(a, b item) int { return strings.Compare(a.Username, b.Username) })
 		return list, nil
-	case "workspace.rename", "channel.set", "channel.delete":
+	case "workspace.rename", "channel.set", "channel.delete", "group.set", "group.delete":
 		return s.adminWorkspace(cmd)
 	case "account.add", "account.edit", "account.enable", "account.disable", "account.passwd", "account.delete", "account.admin", "account.member":
 		return s.adminAccount(cmd)
@@ -81,29 +83,71 @@ func (s *service) admin(cmd command) (any, error) {
 
 func (s *service) adminWorkspace(cmd command) (any, error) {
 	next := s.state.copy()
-	var disconnect string
+	var disconnect, deleted []string
 	switch cmd.Action {
 	case "workspace.rename":
 		if cmd.Name == nil || !validText(*cmd.Name, 64, false) {
 			return nil, errors.New("workspace name must contain 1–64 characters")
 		}
+		if group, exists := next.Groups[defaultGroupID]; exists && group.Name == next.Workspace {
+			group.Name = *cmd.Name
+			next.Groups[group.ID] = group
+		}
 		next.Workspace = *cmd.Name
+	case "group.set":
+		if cmd.Group == nil || !validGroup(*cmd.Group) {
+			return nil, errors.New("invalid channel group")
+		}
+		if next.Groups == nil {
+			next.Groups = make(map[string]channelGroup)
+		}
+		next.Groups[cmd.Group.ID] = *cmd.Group
+	case "group.delete":
+		if cmd.Group == nil {
+			return nil, errMissing
+		}
+		id := cmd.Group.ID
+		if _, exists := next.Groups[id]; !exists {
+			return nil, errMissing
+		}
+		delete(next.Groups, id)
+		for roomID, room := range next.Channels {
+			if room.GroupID == id {
+				delete(next.Channels, roomID)
+				delete(next.RoomRules, roomID)
+				deleted = append(deleted, roomID)
+			}
+		}
 	case "channel.set":
 		if cmd.Channel == nil || !validChannel(*cmd.Channel) {
 			return nil, errors.New("invalid channel or capacity (1–5)")
 		}
-		id := cmd.Channel.ID
-		if previous, ok := next.Channels[id]; ok && previous.Capacity != cmd.Channel.Capacity {
-			disconnect = id
-		} else if !ok && len(next.Channels) >= 30 {
+		value := *cmd.Channel
+		id := value.ID
+		previous, exists := next.Channels[id]
+		if value.GroupID == "" {
+			value.GroupID = previous.GroupID
+			if value.GroupID == "" {
+				value.GroupID = next.ensureDefaultGroup()
+			}
+		}
+		if _, exists := next.Groups[value.GroupID]; !exists {
+			return nil, errors.New("unknown parent group")
+		}
+		if exists && previous.Capacity != value.Capacity {
+			disconnect = append(disconnect, id)
+		} else if !exists && len(next.Channels) >= 30 {
 			return nil, errors.New("at most 30 channels are supported")
-		} else if !ok && s.chat != nil {
+		} else if !exists && s.chat != nil {
 			// A reused room ID cannot expose chat from a failed prior cleanup.
 			if err := s.chat.deleteChannel(id); err != nil {
 				return nil, errors.New("could not prepare channel history")
 			}
 		}
-		next.Channels[id] = *cmd.Channel
+		next.Channels[id] = value
+		if !exists && cmd.grantChannelAdmin != "" {
+			next.setRoomRules(id, cmd.grantChannelAdmin, roomRules{Admin: true})
+		}
 	case "channel.delete":
 		if cmd.Channel == nil {
 			return nil, errMissing
@@ -114,20 +158,30 @@ func (s *service) adminWorkspace(cmd command) (any, error) {
 		}
 		delete(next.Channels, id)
 		delete(next.RoomRules, id)
-		disconnect = id
+		deleted = append(deleted, id)
 	}
 	if err := s.commit(next); err != nil {
 		return nil, errors.New("could not save configuration")
 	}
-	if disconnect != "" {
-		s.remove(s.cut(func(l *lease) bool { return l.Channel == disconnect }))
+	disconnect = append(disconnect, deleted...)
+	if len(disconnect) > 0 {
+		s.remove(s.cut(func(l *lease) bool { return slices.Contains(disconnect, l.Channel) }))
 	}
-	if cmd.Action == "channel.delete" && s.chat != nil {
-		if err := s.chat.deleteChannel(disconnect); err != nil {
-			return nil, errors.New("channel removed; chat cleanup will retry on startup")
+	if s.chat != nil {
+		for _, id := range deleted {
+			if err := s.chat.deleteChannel(id); err != nil {
+				fmt.Fprintln(os.Stderr, "could not remove deleted channel history; cleanup will retry on startup")
+			}
 		}
 	}
-	return map[string]any{"workspace": next.Workspace, "channels": s.channels()}, nil
+	result := map[string]any{"workspace": next.Workspace, "channels": s.channels(), "groups": s.groups()}
+	if cmd.Channel != nil {
+		result["channelId"] = cmd.Channel.ID
+	}
+	if cmd.Group != nil {
+		result["groupId"] = cmd.Group.ID
+	}
+	return result, nil
 }
 
 func (s *service) adminAccount(cmd command) (any, error) {

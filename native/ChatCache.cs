@@ -15,6 +15,8 @@ namespace SquadVoice {
         private static readonly byte[] Entropy = Encoding.UTF8.GetBytes("Squad Voice chat cache v1");
         private static readonly Regex ScopePattern = new Regex("^s-[a-f0-9]{32}$");
         private static readonly Regex EntryPattern = new Regex("^(cursor|p-[a-z0-9_-]+-[a-f0-9]{32}|i-[a-z0-9_-]+-[0-9]+)\\.svc$");
+        private static readonly Regex DirectPattern = new Regex(@"\Adm\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\z");
+        public const int ConversationLimit = 503;
         private readonly SemaphoreSlim gate = new SemaphoreSlim(1, 1);
         private readonly string dataDirectory, defaultRoot, optionsPath, pointerPath;
         private string root;
@@ -45,6 +47,13 @@ namespace SquadVoice {
                 // Cache keys use 128 bits to leave room for the selected folder and atomic write suffix.
                 return BitConverter.ToString(hash.ComputeHash(Encoding.UTF8.GetBytes(value)), 0, 16).Replace("-", "").ToLowerInvariant();
             }
+        }
+
+        public static string ConversationKey(string value) {
+            if (Json.IsId(value)) return value;
+            // This prefix plus the hash is longer than any regular channel ID.
+            return !String.IsNullOrEmpty(value) && value.Length <= ConversationLimit && DirectPattern.IsMatch(value)
+                ? "direct-conversation-" + Hash(value) : null;
         }
 
         public Task<T> Run<T>(Func<T> work) { return RunLocked(work); }
@@ -98,8 +107,9 @@ namespace SquadVoice {
                     foreach (var item in events) {
                         var change = Json.Object(item);
                         var op = Json.Text(change, "op", 16);
-                        var channel = Json.Text(change, "channelId", 48);
-                        if (!Json.IsId(channel) || (op != "delete" && op != "channel" && op != "image")) continue;
+                        if (op != "delete" && op != "channel" && op != "image") continue;
+                        var channel = ConversationKey(Json.Text(change, "channelId", ConversationLimit));
+                        if (channel == null) continue;
                         changedChannels.Add(channel);
                         if (op == "channel") {
                             foreach (var file in Directory.EnumerateFiles(directory, "i-" + channel + "-*.svc")) {

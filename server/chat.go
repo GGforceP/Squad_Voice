@@ -91,7 +91,7 @@ func cacheQuota(value string) (uint64, error) {
 	return mb * 1024 * 1024, nil
 }
 
-func openChat(dir string, quota uint64, channels map[string]channel) (*chatStore, error) {
+func openChat(dir string, quota uint64, workspace state) (*chatStore, error) {
 	c := &chatStore{images: filepath.Join(dir, "images"), quota: quota, changed: make(chan struct{})}
 	if err := os.MkdirAll(c.images, 0700); err != nil {
 		return nil, err
@@ -116,7 +116,7 @@ func openChat(dir string, quota uint64, channels map[string]channel) (*chatStore
 		return nil
 	})
 	if err == nil {
-		err = c.reconcile(channels)
+		err = c.reconcile(workspace)
 	}
 	if err != nil {
 		c.db.Close()
@@ -493,13 +493,20 @@ func (c *chatStore) finish(removed []uint64) {
 	c.notify()
 }
 
-func (c *chatStore) reconcile(channels map[string]channel) error {
+func (c *chatStore) reconcile(workspace state) error {
+	accounts := make(map[string]bool, len(workspace.Accounts))
+	for _, account := range workspace.Accounts {
+		accounts[account.ID] = true
+	}
 	removed := []uint64{}
 	err := c.db.Update(func(tx *bolt.Tx) error {
 		var orphaned []string
 		if err := tx.Bucket(forumBucket).ForEachBucket(func(key []byte) error {
-			if _, ok := channels[string(key)]; !ok {
-				orphaned = append(orphaned, string(key))
+			conversation := string(key)
+			_, channel := workspace.Channels[conversation]
+			a, b, direct := directParticipants(conversation)
+			if !channel && !(direct && accounts[a] && accounts[b]) {
+				orphaned = append(orphaned, conversation)
 			}
 			return nil
 		}); err != nil {

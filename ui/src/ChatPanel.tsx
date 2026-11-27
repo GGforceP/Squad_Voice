@@ -1,7 +1,12 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { FormEvent, ClipboardEvent, DragEvent } from 'react';
-import { ImagePlus, MessageCircle, Send, Smile, Trash2, X } from 'lucide-react';
+import { Check, Copy, Download, ImagePlus, Send, Smile, Trash2, X } from 'lucide-react';
 import { NativeError, call, message, subscribe } from './native';
+import type { MemberRole } from './native';
+import { Avatar, RoleBadge } from './ChannelControls';
+import { PhotoPreview } from './PhotoPreview';
+import { imageLimit, imageTypes, originalImageLimit } from './imageLimits';
+import { prepareChatImage } from './imageUpload';
 
 type Item = {
   id: number; channelId: string; author: string; authorId: string; time: string; text: string;
@@ -9,9 +14,9 @@ type Item = {
 };
 type Page = { tag: string; more: boolean; messages: Item[] };
 export type ChatUpdate = { reset: boolean; events: { op: string; channelId: string; id?: number }[] };
-const fileLimit = 5 * 1024 * 1024;
 const emoji = ['😀', '😂', '🤣', '🥹', '😅', '😎', '🤔', '😮', '😵', '😭', '👍', '👀', '👏', '💪', '🙏', '🔥', '🎉', '🎮', '💯', '❤️', '💤', '🫡', '🤝', '✅'];
-const timeLabel = new Intl.DateTimeFormat('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+const timeLabel = new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-digit' });
+const dateLabel = new Intl.DateTimeFormat('zh-CN', { year: 'numeric', month: 'long', day: 'numeric', weekday: 'short' });
 
 function fileData(file: File): Promise<string> {
   return new Promise((done, reject) => {
@@ -55,31 +60,19 @@ function Attachment({ item, scroller, onLoad }: { item: Item; scroller: HTMLDivE
   }, [item.image, item.id, item.channelId, scroller, attempt]);
   return <div className="chat-attachment" ref={marker}>
     {url ? <>
-      <button type="button" className="chat-photo" aria-label="双击查看大图" title="双击查看大图" onDoubleClick={() => setPreview(true)}
-        onKeyDown={event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); setPreview(true); } }}>
+      <button type="button" className="chat-photo" aria-label="查看大图" title="查看大图" onClick={() => setPreview(true)}>
         <img src={url} alt={item.author + ' 发送的图片'} data-testid="chat-image" onLoad={onLoad} />
       </button>
-      {preview && <PhotoPreview url={url} author={item.author} close={() => setPreview(false)} />}
+      {preview && <PhotoPreview url={url} author={item.author} id={item.id} channelId={item.channelId} close={() => setPreview(false)} />}
     </> :
       failure ? <button className="link-button" type="button" onClick={() => setAttempt(value => value + 1)}>{failure}</button> :
         <span>图片 · 正在加载</span>}
   </div>;
 }
 
-function PhotoPreview({ url, author, close }: { url: string; author: string; close: () => void }) {
-  const dialog = useRef<HTMLDialogElement>(null);
-  useEffect(() => { dialog.current?.showModal(); }, []);
-  return <dialog className="photo-preview" aria-label="图片预览" data-testid="photo-preview" ref={dialog}
-    onCancel={event => { event.preventDefault(); close(); }} onClick={event => { if (event.target === event.currentTarget) close(); }}>
-    <div className="photo-viewer"><header><span>{author} 发送的图片</span>
-      <button type="button" className="icon-button" aria-label="关闭图片" data-testid="photo-close" onClick={close}><X size={19} /></button></header>
-      <img src={url} alt={author + ' 发送的原图'} />
-    </div>
-  </dialog>;
-}
-
-export function ChatPanel({ channelId, admin, ready, connectionError, restricted }: {
-  channelId: string; admin: boolean; ready: boolean; connectionError: string; restricted: boolean;
+export function ChatPanel({ channelId, selfId, conversationName, direct, admin, ready, connectionError, restricted, roleFor }: {
+  channelId: string; selfId: string; conversationName: string; direct?: boolean;
+  admin: boolean; ready: boolean; connectionError: string; restricted: boolean; roleFor: (id: string) => MemberRole | undefined;
 }) {
   const [items, setItems] = useState<Item[]>([]);
   const [more, setMore] = useState(false);
@@ -90,6 +83,9 @@ export function ChatPanel({ channelId, admin, ready, connectionError, restricted
   const [image, setImage] = useState<File | null>(null);
   const [picker, setPicker] = useState(false);
   const [sending, setSending] = useState(false);
+  const [compressing, setCompressing] = useState(false);
+  const [copied, setCopied] = useState<number | null>(null);
+  const [download, setDownload] = useState<number | null>(null);
   const [confirm, setConfirm] = useState<number | null>(null);
   const [scroller, setScroller] = useState<HTMLDivElement | null>(null);
   const input = useRef<HTMLTextAreaElement>(null);
@@ -106,6 +102,8 @@ export function ChatPanel({ channelId, admin, ready, connectionError, restricted
   const filtered = useRef(new Map<number, 'delete' | 'image'>());
   const retryDelay = useRef(0);
   const retryCount = useRef(0);
+  const sendJob = useRef<AbortController | null>(null);
+  const copyTimer = useRef(0);
   const canSend = ready && !restricted;
   const entryLimit = useCallback(() => Math.max(2, Math.min(14, Math.floor((scroller?.clientHeight ?? 150) / 42) + 1)), [scroller]);
 
@@ -168,7 +166,12 @@ export function ChatPanel({ channelId, admin, ready, connectionError, restricted
 
   useEffect(() => {
     mounted.current = true;
-    return () => { mounted.current = false; window.clearTimeout(retryDelay.current); };
+    return () => {
+      mounted.current = false;
+      sendJob.current?.abort();
+      window.clearTimeout(retryDelay.current);
+      window.clearTimeout(copyTimer.current);
+    };
   }, []);
   useEffect(() => {
     if (ready && scroller) void load();
@@ -209,8 +212,8 @@ export function ChatPanel({ channelId, admin, ready, connectionError, restricted
   function updateText(value: string) { setText(value.slice(0, 2000)); retryKey.current = ''; }
   function choose(file?: File) {
     if (!file) return;
-    if (file.size > fileLimit || file.size === 0) { setError('图片大小需在 5 MB 以内。'); return; }
-    if (file.type && !['image/png', 'image/jpeg', 'image/gif', 'image/webp'].includes(file.type)) {
+    if (file.size > originalImageLimit || file.size === 0) { setError('请选择不超过 50 MiB 的有效图片。'); return; }
+    if (file.type && !imageTypes.includes(file.type)) {
       setError('请选择 PNG、JPEG、GIF 或 WebP 图片。'); return;
     }
     setImage(file);
@@ -227,14 +230,24 @@ export function ChatPanel({ channelId, admin, ready, connectionError, restricted
   }
   async function send(event: FormEvent) {
     event.preventDefault();
-    if (!canSend || sending || (!text.trim() && !image)) return;
+    if (!canSend || sendJob.current || (!text.trim() && !image)) return;
+    const job = new AbortController();
+    sendJob.current = job;
     setSending(true);
     setError('');
     try {
       const nonce = retryKey.current || crypto.randomUUID();
       retryKey.current = nonce;
       const args: Record<string, unknown> = { channelId, text, nonce };
-      if (image) args.image = await fileData(image);
+      if (image) {
+        setCompressing(image.size > imageLimit);
+        const prepared = await prepareChatImage(image, job.signal);
+        if (job.signal.aborted) return;
+        setCompressing(false);
+        if (prepared !== image) setImage(prepared);
+        args.image = await fileData(prepared);
+        if (job.signal.aborted) return;
+      }
       const sent = await call<Item>('chat.send', args);
       if (!mounted.current) return;
       stickToEnd.current = true;
@@ -245,7 +258,25 @@ export function ChatPanel({ channelId, admin, ready, connectionError, restricted
       input.current?.focus();
     } catch (failure) {
       if (mounted.current) setError(message(failure, '消息发送失败，请重试。'));
-    } finally { if (mounted.current) setSending(false); }
+    } finally {
+      if (sendJob.current === job) sendJob.current = null;
+      if (mounted.current) { setSending(false); setCompressing(false); }
+    }
+  }
+  async function copy(row: Item) {
+    try {
+      if (!await call<boolean>('chat.copy', { text: row.text })) return;
+      if (!mounted.current) return;
+      setCopied(row.id);
+      window.clearTimeout(copyTimer.current);
+      copyTimer.current = window.setTimeout(() => setCopied(null), 1800);
+    } catch (failure) { if (mounted.current) setError(message(failure, '复制失败，请重试。')); }
+  }
+  async function save(row: Item) {
+    setDownload(row.id);
+    try { await call('chat.download', { id: row.id, channelId }); }
+    catch (failure) { if (mounted.current) setError(message(failure, '下载失败，请重试。')); }
+    finally { if (mounted.current) setDownload(null); }
   }
   async function remove(id: number) {
     try {
@@ -269,28 +300,46 @@ export function ChatPanel({ channelId, admin, ready, connectionError, restricted
     requestAnimationFrame(() => { input.current?.focus(); input.current?.setSelectionRange(position + value.length, position + value.length); });
   }
 
-  return <section className="chat-pane" aria-label="频道聊天" data-testid="chat-pane">
-    <header className="chat-heading"><MessageCircle size={16} /><strong>频道聊天</strong>
-      {loading && <span>正在加载</span>}{offlineLabel(ready, connectionError)}
-    </header>
+  return <section className="chat-pane" aria-label={direct ? '私信聊天' : '频道聊天'} data-testid="chat-pane">
     <div className="chat-history" ref={setScroller} data-testid="chat-history" tabIndex={0}
       onScroll={event => onScroll(event.currentTarget)}
       onWheel={event => { if (event.deltaY < 0 && event.currentTarget.scrollTop <= 12) { stickToEnd.current = false; void load(true); } }}
       onKeyDown={event => { if (['PageUp', 'Home', 'ArrowUp'].includes(event.key) && event.currentTarget.scrollTop <= 12) { stickToEnd.current = false; void load(true); } }}>
       {more && <button className="link-button chat-more" type="button" disabled={loading || !ready} onClick={() => { stickToEnd.current = false; void load(true); }}>查看更早的消息</button>}
       {loaded && items.length === 0 && <p className="chat-empty">还没有消息</p>}
-      {items.map(row => <article className="chat-row" data-testid="chat-row" data-message-id={row.id} key={row.id}>
-        <div className="chat-meta"><strong>{row.author}</strong><time dateTime={row.time}>{timeLabel.format(new Date(row.time))}</time>
-          {admin && <button className="icon-button chat-delete" type="button" aria-label="删除消息" title="删除消息" data-testid="chat-delete" onClick={() => setConfirm(row.id)}><Trash2 size={14} /></button>}
-        </div>
-        {row.text && <p>{row.text}</p>}
-        {row.image && <Attachment item={row} scroller={scroller} onLoad={followNewImage} />}
-        {row.imageGone && <small className="chat-image-gone">图片已被服务器清理</small>}
-        {confirm === row.id && <div className="chat-confirm">从所有成员的记录中删除这条消息？
-          <button type="button" className="button danger" data-testid="confirm-message-delete" onClick={() => void remove(row.id)}>删除</button>
-          <button type="button" className="button soft" onClick={() => setConfirm(null)}>取消</button>
-        </div>}
-      </article>)}
+      {!loaded && !error && <p className="chat-empty">{loading ? '正在加载消息' : offlineLabel(ready, connectionError)}</p>}
+      {items.map((row, index) => {
+        const mine = row.authorId === selfId;
+        const date = dateLabel.format(new Date(row.time));
+        const previous = items[index - 1];
+        return <div className="chat-item" key={row.id}>
+          {(!previous || dateLabel.format(new Date(previous.time)) !== date) && <div className="chat-date">{date}</div>}
+          <article className={'chat-row' + (mine ? ' own' : '')} data-testid="chat-row" data-message-id={row.id}>
+            <Avatar name={row.author} />
+            <div className="chat-message">
+              <div className="chat-meta"><span className="chat-author"><strong>{row.author}</strong><RoleBadge role={roleFor(row.authorId)} /></span>
+                <time dateTime={row.time}>{timeLabel.format(new Date(row.time))}</time>
+                <div className="chat-actions" aria-label="消息操作">
+                {row.text && <button className="icon-button" type="button" aria-label={copied === row.id ? '已复制' : '复制文字'}
+                  title={copied === row.id ? '已复制' : '复制文字'} data-testid="chat-copy" onClick={() => void copy(row)}>
+                  {copied === row.id ? <Check size={14} /> : <Copy size={14} />}</button>}
+                {row.image && <button className="icon-button" type="button" aria-label="下载图片" title="下载图片"
+                  disabled={download !== null} onClick={() => void save(row)}><Download size={14} /></button>}
+                {admin && <button className="icon-button chat-delete" type="button" aria-label="删除消息" title="删除消息"
+                  data-testid="chat-delete" onClick={() => setConfirm(row.id)}><Trash2 size={14} /></button>}
+                </div>
+              </div>
+              {row.text && <p className="chat-text">{row.text}</p>}
+              {row.image && <Attachment item={row} scroller={scroller} onLoad={followNewImage} />}
+              {row.imageGone && <small className="chat-image-gone">图片已被服务器清理</small>}
+              {confirm === row.id && <div className="chat-confirm">从所有成员的记录中删除这条消息？
+                <button type="button" className="button danger" data-testid="confirm-message-delete" onClick={() => void remove(row.id)}>删除</button>
+                <button type="button" className="button soft" onClick={() => setConfirm(null)}>取消</button>
+              </div>}
+            </div>
+          </article>
+        </div>;
+      })}
     </div>
     {(error || (!ready && connectionError)) && <div className="chat-error" role="alert">{error || connectionError}
       {error && !loaded && <button type="button" className="link-button" onClick={() => void load()}>重试</button>}</div>}
@@ -301,12 +350,13 @@ export function ChatPanel({ channelId, admin, ready, connectionError, restricted
       <input hidden ref={filePicker} type="file" accept="image/png,image/jpeg,image/gif,image/webp" data-testid="chat-file"
         onChange={event => { choose(event.target.files?.[0]); event.target.value = ''; }} />
       <div className="chat-entry">
-        <button className="icon-button" type="button" aria-label="添加图片，最大 5 MB" title="图片 · 最大 5 MB" onClick={() => filePicker.current?.click()} disabled={!canSend || sending}><ImagePlus size={18} /></button>
+        <button className="icon-button" type="button" aria-label="添加图片" title="添加图片 · 超过 5 MiB 自动压缩" onClick={() => filePicker.current?.click()} disabled={!canSend || sending}><ImagePlus size={18} /></button>
         <button className="icon-button" type="button" aria-label="表情" title="表情" aria-expanded={picker && canSend} onClick={() => setPicker(!picker)} disabled={!canSend || sending}><Smile size={18} /></button>
-        <textarea ref={input} rows={1} maxLength={2000} aria-label="频道消息" data-testid="chat-text" placeholder={restricted ? '管理员已暂停你的发言' : '发送消息'} disabled={!canSend || sending}
+        <textarea ref={input} rows={1} maxLength={2000} aria-label={direct ? '私信消息' : '频道消息'} data-testid="chat-text"
+          placeholder={restricted ? '管理员已暂停你的发言' : direct ? '发私信给 ' + conversationName : '发消息到 #' + conversationName} disabled={!canSend || sending}
           value={text} onChange={event => updateText(event.target.value)} onPaste={paste}
           onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }} />
-        <button className="button primary chat-send" type="submit" data-testid="chat-send" disabled={!canSend || sending || !(text.trim() || image)}><Send size={15} /> {sending ? '发送中' : '发送'}</button>
+        <button className="button primary chat-send" type="submit" data-testid="chat-send" disabled={!canSend || sending || !(text.trim() || image)}><Send size={15} /> {compressing ? '压缩中' : sending ? '发送中' : '发送'}</button>
       </div>
     </form>
   </section>;

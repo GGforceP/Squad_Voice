@@ -16,7 +16,7 @@ import (
 func TestChatPersistenceAndRetention(t *testing.T) {
 	room := map[string]channel{"voice-lobby": {ID: "voice-lobby", Name: "Lobby", Capacity: 5}}
 	dir := filepath.Join(t.TempDir(), "mediacache")
-	store, err := openChat(dir, 10, room)
+	store, err := openChat(dir, 10, state{Channels: room})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -77,7 +77,7 @@ func TestChatPersistenceAndRetention(t *testing.T) {
 	}
 	originalEpoch := store.epoch
 	store.close()
-	store, err = openChat(dir, 10, room)
+	store, err = openChat(dir, 10, state{Channels: room})
 	if err != nil {
 		t.Fatal(err)
 	}

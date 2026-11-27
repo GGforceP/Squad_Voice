@@ -9,7 +9,7 @@ import { MicrophoneNoiseProcessor, microphoneOptions } from './microphone';
 setLogLevel(LogLevel.silent);
 
 export type AudioApp = { pid: number; name: string; executable: string; active: boolean };
-export type Member = { id: string; name: string; self: boolean; speaking: boolean; mic: boolean; music: boolean; quality: string; volume: number; role?: MemberRole; rules?: RoomRules };
+export type Member = { id: string; userId?: string; name: string; self: boolean; speaking: boolean; mic: boolean; music: boolean; quality: string; volume: number; role?: MemberRole; rules?: RoomRules };
 export type VoiceState = {
   status: 'idle' | 'joining' | 'connected' | 'reconnecting';
   channelId: string | null; members: Member[]; since: number | null;
